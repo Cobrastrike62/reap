@@ -1,0 +1,29 @@
+# venvs / build
+.venv/
+.reap-pwncat/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+
+# engagement artifacts (loot — never commit)
+reap.db
+*.reap.db
+loot/
+reap-report.md
+reap-report.json
+reap-targets.txt
+reap-users.txt
+reap-pass.txt
+reap-userpass.txt
+requirements-pwncat.lock
+
+# kept locally, not published
+loot-framework-spec.md
+reap-playbook.docx
+
+# editor / os
+.idea/
+.vscode/
+.DS_Store

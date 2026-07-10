@@ -1,0 +1,16 @@
+# pwncat-vl — the EXTERNAL shell catcher/stabilizer. NOT vendored.
+# Install in its OWN venv, never alongside reap (keeps its deps from colliding).
+#
+# CONSTRAINT: pin a known-good version — do not float to latest, so a
+# fork update can't silently break the handoff. The vl fork keeps the `pwncat-cs`
+# entrypoint.
+#
+# Because the exact published version varies, pin it ON the Kali box at install
+# time:  install.sh --with-pwncat  captures the resolved version into
+# requirements-pwncat.lock. Or do it by hand:
+#
+#   python3 -m venv ~/.reap-pwncat
+#   ~/.reap-pwncat/bin/pip install pwncat-vl
+#   ~/.reap-pwncat/bin/pip freeze | grep -i pwncat   # <- copy that pin here
+#
+pwncat-vl
