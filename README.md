@@ -1,5 +1,14 @@
 # reap
 
+```
+██████╗ ███████╗ █████╗ ██████╗
+██╔══██╗██╔════╝██╔══██╗██╔══██╗
+██████╔╝█████╗  ███████║██████╔╝
+██╔══██╗██╔══╝  ██╔══██║██╔═══╝
+██║  ██║███████╗██║  ██║██║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝
+```
+
 Post-exploitation loot collection and credential-reuse testing for authorized engagements (penetration tests, HTB/CTF labs).
 
 You get the foothold. reap attaches to it and does the tedious part: it enumerates the host for secrets, configs, keys, and privilege-escalation signals, tests every credential it finds against every service it finds, and gives you a ranked findings list plus a report. It does not exploit anything and it does not decide your pivots — those stay with you.
