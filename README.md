@@ -77,9 +77,12 @@ Pick the adapter that matches the access you already have:
 | SSH password or key | `register ssh <ip> <user> [<pass>] [--key PATH] [--port N]` |
 | WinRM | `register winrm <ip> <user> <pass> [--ssl] [--port N]` |
 | Web / command-injection RCE | `register webshell <url> [--param NAME] [--method GET\|POST] [--shell sh\|cmd]` |
-| Raw reverse/bind shell | stabilize in pwncat-vl, drop an SSH key, then `register ssh` |
+| Raw reverse shell (nc-style) | `register listen <port>`, then fire your payload — reap catches it |
+| Raw bind shell | `register bind <host> <port>` |
 
 For a nologin web user such as `www-data`, the `webshell` adapter loots the host over the RCE while correlation finds the credential that gets you a real shell.
+
+Raw shells are driven with sentinel-wrapped commands over the socket (no PTY, so no interactive prompts). reap only runs commands that return, so collection works fine; for stability-sensitive work, upgrade to SSH. Add `--shell cmd` for a Windows `cmd.exe` shell.
 
 ## Commands
 

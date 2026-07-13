@@ -8,6 +8,7 @@ from __future__ import annotations
 from .base import NotSupported, Result, Session
 from .meterpreter import MeterpreterSession
 from .pwncat import PwncatHandoffSession
+from .rawshell import RawShellSession
 from .ssh import SSHSession
 from .webshell import WebShellSession
 
@@ -24,6 +25,8 @@ ADAPTERS = {
     "pwncat": PwncatHandoffSession,
     "meterpreter": MeterpreterSession,
     "webshell": WebShellSession,
+    "bind": RawShellSession,     # connect out to a bind shell
+    "listen": RawShellSession,   # catch a reverse shell
 }
 
 __all__ = [
@@ -35,6 +38,7 @@ __all__ = [
     "PwncatHandoffSession",
     "MeterpreterSession",
     "WebShellSession",
+    "RawShellSession",
     "ADAPTERS",
 ]
 

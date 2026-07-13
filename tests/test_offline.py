@@ -228,3 +228,27 @@ def test_sudo_privesc_flags_nopasswd():
     sess = FakeSession({"sudo -n -l": "(root) NOPASSWD: /usr/bin/vim"})
     findings = SudoPrivesc().collect(sess)
     assert any("NOPASSWD" in f.title for f in findings if f.severity == "high")
+
+
+# --- raw shell sentinel exec (reverse/bind shells) --------------------------
+def test_rawshell_exec_recovers_output_and_exit_code():
+    import socket
+    import threading
+    from reap.transport.rawshell import RawShellSession
+
+    a, b = socket.socketpair()
+    sess = RawShellSession(sock=a, prime=False, shell="sh")   # inject socket, no network
+
+    def fake_shell():
+        b.recv(65536)                                          # consume the wrapped command
+        b.sendall(("uid=0(root) gid=0(root)\n" + sess._marker + "0\n").encode())
+
+    t = threading.Thread(target=fake_shell, daemon=True)
+    t.start()
+    result = sess.exec("id")
+    t.join(timeout=5)
+    assert result.exit_code == 0
+    assert "uid=0(root)" in result.out
+    assert sess._marker not in result.out                     # sentinel stripped from output
+    a.close()
+    b.close()

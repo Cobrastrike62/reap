@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3 — raw reverse/bind shell adapter
+
+- **`RawShellSession` + `register listen` / `register bind`.** reap can now drive a
+  raw caught shell directly, without upgrading it first. `listen <port>` opens a
+  listener and catches a reverse shell (reap replaces `nc`); `bind <host> <port>`
+  dials out to a bind shell. Each command is wrapped with a high-entropy sentinel so
+  reap recovers the command's output and a real exit code over the bare socket — the
+  same technique the webshell adapter uses, applied to TCP.
+- No PTY, so interactive prompts don't work; reap only runs commands that return, so
+  collection modules are unaffected. `--shell cmd` handles a Windows `cmd.exe` shell.
+  Forwarding still needs SSH; for stability-sensitive work, upgrade to SSH.
+
 ## v1.2 — SSH port forwarding
 
 - **`forward` / `unforward` / `forwards` commands.** Tunnel a target-internal

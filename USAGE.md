@@ -57,7 +57,8 @@ have** (`register` auto-fingerprints OS / privilege / runtimes afterwards):
 | SSH private key | `register ssh <ip> <user> --key /path/key [--port 22]` |
 | Windows + WinRM creds | `register winrm <ip> <user> <password> [--ssl] [--port 5985]` |
 | **Web shell** (HTTP RCE: a page that runs a command parameter) | `register webshell <url> [--param cmd] [--method POST]` |
-| Raw reverse/bind shell (nc) | upgrade it first — see below |
+| Raw reverse shell (nc) | `register listen <port>` then fire your payload |
+| Raw bind shell | `register bind <host> <port>` |
 
 ### "My shell isn't SSH" — read this
 
@@ -73,16 +74,16 @@ Match your situation:
   # --param NAME if it reads a different parameter; --method GET if it's a GET shell
   ```
 
-- **You caught a raw reverse/bind shell** (a netcat listener you type into) → reap
-  can't drive a raw socket directly, by design. Upgrade it to a real channel first
-  (this is the pwncat-vl flow reap is built around):
-  1. Catch + stabilize the shell in **pwncat-vl**.
-  2. From the shell, drop your SSH public key into the user's
-     `~/.ssh/authorized_keys` (or add a user).
-  3. `register ssh <ip> <user> --key <yourkey>` — reap now has a clean channel.
+- **You caught (or will catch) a raw reverse/bind shell** → reap drives it directly:
+  - Reverse shell: `register listen <port>`, then fire your payload — reap becomes the
+    listener and catches the callback (don't use a separate `nc`).
+  - Bind shell: `register bind <host> <port>`.
+  - Windows `cmd.exe` shell: add `--shell cmd`.
 
-  Can't get SSH (nologin account, no sshd)? If you still have command exec, write a
-  webshell to a web-served path and use `register webshell` instead.
+  reap wraps each command with a sentinel to recover its output and exit code over the raw
+  socket. There is no PTY, so interactive prompts (a sudo password, an editor) won't work —
+  reap only runs commands that return, so collection is fine. For stability-sensitive work,
+  upgrade to SSH instead: stabilize in **pwncat-vl**, drop your key, then `register ssh`.
 
 - **Windows shell that isn't WinRM** → get/enable WinRM creds and `register winrm`,
   or drop a webshell on the IIS app and `register webshell`.
@@ -111,7 +112,7 @@ persists, so correlation spans every hop and gets smarter as you go deeper.
 
 | command | what it does |
 |---|---|
-| `register <adapter> …` | attach to a foothold (ssh / winrm / webshell / handoff) |
+| `register <adapter> …` | attach to a foothold (ssh / winrm / webshell / bind / listen / handoff) |
 | `sessions` / `use <id>` | list registered sessions / switch the active one |
 | `hosts` | list discovered hosts (persist in the loot DB) |
 | `fingerprint` | re-probe the active session (OS, priv, runtimes) |

