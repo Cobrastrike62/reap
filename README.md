@@ -137,15 +137,19 @@ Windows `cmd.exe` reverse/bind shell: add `--shell cmd` (e.g. `register listen 4
 
 ## Reaching internal services
 
-Services bound to a target's localhost — a database, an admin panel, a second SSH — aren't reachable from your machine. reap tunnels to them over the SSH session it already holds:
+Services bound to a target's localhost — a database, an admin panel, a second SSH — aren't reachable from your machine. reap tunnels to them over the session it already holds:
 
 ```
 reap> forward 127.0.0.1 3306          # the foothold's own loopback MySQL
 reap> forward 10.10.20.50 22 2222     # a second host, only reachable from the foothold
+reap> forwards                         # list active tunnels;  unforward <port> closes one
 reap> correlate                        # tests discovered creds against the forwarded service
 ```
 
-On `run`, reap also auto-forwards loopback-bound databases and services it discovers, so correlation can reach them. Over an SSH session this is in-process (paramiko `direct-tcpip`); over a **raw reverse/bind shell** reap instead stands up a **chisel reverse tunnel** (the target dials back to you), which needs a `chisel` binary on your box (`REAP_CHISEL` or on `PATH`) and `wget`/`curl` on the target.
+The forwarded local port is registered as a service, so `correlate` and any adapter reach it. On `run`, reap also **auto-forwards** loopback-bound databases and services it discovers. How the tunnel is built depends on the session:
+
+- **SSH** — in-process, via paramiko `direct-tcpip` (like `ssh -L`, no second terminal).
+- **Raw reverse/bind shell** — a raw shell is a single command channel and can't multiplex TCP, so reap stands up a **chisel reverse tunnel**: it runs a chisel server on your box and, through the shell, has the target fetch chisel and run a client that dials **back out** to you (so the target's firewall doesn't block it). Needs `chisel` on your box (`apt install chisel`, or `REAP_CHISEL=/path`), `wget`/`curl` on the target, and — if reap guesses the callback IP wrong — `REAP_LHOST=<your-ip>`.
 
 ## Extending
 
