@@ -145,7 +145,7 @@ reap> forward 10.10.20.50 22 2222     # a second host, only reachable from the f
 reap> correlate                        # tests discovered creds against the forwarded service
 ```
 
-On `run`, reap also auto-forwards loopback-bound databases and services it discovers, so correlation can reach them. Forwarding needs an SSH-backed session.
+On `run`, reap also auto-forwards loopback-bound databases and services it discovers, so correlation can reach them. Over an SSH session this is in-process (paramiko `direct-tcpip`); over a **raw reverse/bind shell** reap instead stands up a **chisel reverse tunnel** (the target dials back to you), which needs a `chisel` binary on your box (`REAP_CHISEL` or on `PATH`) and `wget`/`curl` on the target.
 
 ## Extending
 

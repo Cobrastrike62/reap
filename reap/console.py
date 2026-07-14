@@ -301,9 +301,18 @@ class ReapConsole(cmd.Cmd):
             return
         try:
             fwd = self.sessions[sid].open_forward(rhost, rport, lport)
-        except NotSupported as exc:
-            self.console.print(f"[red]{exc}[/]\n  register an SSH foothold to forward through")
-            return
+        except NotSupported:
+            # Exec-only session (raw shell / webshell): no multiplexed channel to
+            # forward through in-process — orchestrate a chisel reverse tunnel
+            # (the target dials back out to us; needs chisel + wget/curl on target).
+            self.console.print("[cyan]no in-process forwarding on this session — "
+                               "setting up a chisel reverse tunnel (target dials back)...[/]")
+            try:
+                from .transport.chisel import ChiselForward
+                fwd = ChiselForward(self.sessions[sid], rhost, rport, local_port=lport)
+            except Exception as exc:
+                self.console.print(f"[red]chisel forward failed:[/] {exc}")
+                return
         except Exception as exc:
             self.console.print(f"[red]forward failed: {exc}[/]")
             return

@@ -68,6 +68,12 @@ class RawShellSession(Session):
             self.session_id = session_id or f"bind:{host}:{port}"
 
         self._sock.settimeout(1.0)
+        # The operator-side address the target reached us on — the natural
+        # callback host for a chisel reverse tunnel (see transport.chisel).
+        try:
+            self.local_addr = self._sock.getsockname()[0]
+        except Exception:
+            self.local_addr = None
         if prime:
             self._prime()
 

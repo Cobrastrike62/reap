@@ -176,10 +176,12 @@ persists, so correlation spans every hop and gets smarter as you go deeper.
 ## 6. Reaching internal / loopback-only services (port forwarding)
 
 Services bound to a target's `127.0.0.1` (a DB, an admin panel, a second SSH) aren't
-reachable from your Kali — but reap already holds your SSH session, so it can tunnel to
-them itself, same as `ssh -L` but with no second terminal and no re-auth. **Needs an
-SSH-backed session** (a `register ssh` or pwncat handoff); a `webshell` session has no
-transport to forward through.
+reachable from your Kali — but reap can tunnel to them over the session it already holds.
+Over an **SSH** session it's in-process (paramiko `direct-tcpip`, like `ssh -L` with no
+second terminal). Over a **raw reverse/bind shell** it stands up a **chisel reverse
+tunnel** instead — the target dials back out to you (firewall-friendly), which needs a
+`chisel` binary on your Kali (`REAP_CHISEL` or on `PATH`) and `wget`/`curl` on the target.
+Either way the forwarded local endpoint is registered so `correlate` reaches it.
 
 **Automatic.** On `run`, reap auto-forwards any loopback-bound DB/SSH/etc. it discovers
 and registers the local end so `correlate` reaches it:

@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.4 — port forwarding through raw shells (chisel)
+
+- **`forward` now works over exec-only sessions** (raw reverse/bind shells,
+  webshells), not just SSH. A raw shell is a single command channel and can't
+  multiplex TCP streams, so reap orchestrates a **chisel reverse tunnel**: it runs
+  a chisel server on the operator host and, through the shell, has the target pull
+  chisel and run a reverse client that dials back out (firewall-friendly). The
+  forwarded local port is registered so `correlate` reaches the internal service.
+- Auto-detects the callback address from the caught shell (override with
+  `REAP_LHOST`); resolves the chisel binary via `REAP_CHISEL` / `PATH`. Requires
+  `wget` or `curl` on the target. SSH sessions still forward in-process (unchanged).
+- Also silenced paramiko's background-thread logging (the "Error reading SSH
+  protocol banner" traceback spam during credential-reuse testing).
+
 ## v1.3 — raw reverse/bind shell adapter
 
 - **`RawShellSession` + `register listen` / `register bind`.** reap can now drive a

@@ -252,3 +252,16 @@ def test_rawshell_exec_recovers_output_and_exit_code():
     assert sess._marker not in result.out                     # sentinel stripped from output
     a.close()
     b.close()
+
+
+# --- chisel reverse forward (exec-only sessions) ----------------------------
+def test_chisel_forward_needs_lhost(monkeypatch):
+    import pytest
+    from reap.transport.chisel import ChiselForward, resolve_chisel
+    monkeypatch.delenv("REAP_LHOST", raising=False)
+    assert resolve_chisel() is None or isinstance(resolve_chisel(), str)
+
+    class _NoAddr:            # a session with no local_addr and no REAP_LHOST
+        pass
+    with pytest.raises(RuntimeError, match="REAP_LHOST"):
+        ChiselForward(_NoAddr(), "127.0.0.1", 1337)
