@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.5 — native enumeration (`enum`) + a target shell (`!` / `interact`)
+
+- **`enum` — linpeas-style situational awareness, natively.** Surveys the active
+  session and prints it to screen: processes, cron jobs (all sources: crontab,
+  `cron.d`, periodic dirs, user spool, systemd timers), systemd/SysV services,
+  network (interfaces / routes / connections / ARP / DNS / hosts), and kernel / OS /
+  sudo versions. No binary to drop or hide, unlike the opt-in LinPEAS/WinPEAS
+  wrappers. Screen-only by design (`enum [filter]` narrows by module) so it never
+  clutters the loot DB. Five new collectors — `processes`, `cron_jobs`,
+  `init_services`, `system_snapshot` (Linux) and `windows_enum` (Windows); 28
+  modules now register (was 23).
+- **The actionable subset is still persisted by `run`.** The same collectors emit
+  ranked findings for what matters: a secret on a process/cron/service command line
+  → credential (fed to correlation); a **writable** systemd unit / `ExecStart=`
+  binary / cron target → high misconfig (classic privesc); an unquoted Windows
+  service path → medium. Command-line password switches (`--password X`) are vetted
+  so a `-passwd /path/to/file` reference isn't mistaken for a literal secret, and
+  pseudo-fs paths (`/dev/null` &c.) are excluded from writability checks.
+- **`!<cmd>` / `interact` — run terminal commands on the target from the console.**
+  `!id`, `!ls -la /root` for one-offs; `interact` for a line-based remote prompt
+  until `exit`/Ctrl-D. A per-session **virtual working directory** makes `cd`
+  persist across commands on *every* transport, including SSH whose `exec` channel
+  is otherwise one-shot. No PTY (no `top`/`vi`/interactive `sudo`) — same limit as
+  the raw-shell adapter; stabilize in pwncat-vl for those. Unknown console verbs now
+  hint at `!`/`interact` instead of a bare error. Tests: 16 → 24.
+
 ## v1.4 — port forwarding through raw shells (chisel)
 
 - **`forward` now works over exec-only sessions** (raw reverse/bind shells,

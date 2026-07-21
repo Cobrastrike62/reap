@@ -75,3 +75,19 @@ class Finding:
     source_module: str = ""
     credential: Optional[Credential] = None
     service: Optional[Service] = None
+
+
+@dataclass
+class EnumSection:
+    """A block of situational-awareness output for the console ``enum`` view
+    (linpeas-style: processes, services, crons, network, kernel).
+
+    Screen-only and high-volume by nature — it is *not* persisted. A module still
+    routes the actionable subset (secrets in a command line, a writable service /
+    cron target) into the loot store as ranked ``Finding`` objects via ``collect``;
+    ``enumerate`` is only the human-readable dump.
+    """
+
+    title: str
+    lines: list[str] = field(default_factory=list)
+    hint: str = ""                  # one line on why it matters / what to check

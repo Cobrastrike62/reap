@@ -119,6 +119,16 @@ def mask(value: str) -> str:
     return f"{v[:2]}***{v[-2:]} ({len(v)} chars)"
 
 
+def inline_cmdline_secret(val: str) -> bool:
+    """True only for a literal secret value on a command line — not a file path
+    (``-passwd /etc/vnc/passwd``), the next flag, or a placeholder. Used to vet
+    ``--password X`` style switches the ASSIGNMENT shape can't see."""
+    v = (val or "").strip().strip("\"'")
+    if not v or v[0] in "-/~." or "/" in v:
+        return False
+    return not looks_placeholder(v)
+
+
 # Common password-hash shapes, most-specific first. Used to recognize hashes
 # pulled from DB dumps / SAM output and to route NTLM hashes to pass-the-hash.
 _HASH_SHAPES = [

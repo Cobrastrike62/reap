@@ -7,7 +7,7 @@ known-filename list) without touching the engine, store, or console. The
 """
 from __future__ import annotations
 
-from ..models import Context, Finding
+from ..models import Context, EnumSection, Finding
 from ..transport.base import Session
 
 
@@ -20,6 +20,16 @@ class Module:
 
     def collect(self, session: Session) -> list[Finding]:
         """Run collection, return typed findings. Never prints as output."""
+        return []
+
+    def enumerate(self, session: Session) -> list[EnumSection]:
+        """Optional situational-awareness dump for the ``enum`` console view
+        (full process / service / cron / network listings, linpeas-style).
+
+        Screen-only and unbounded by design; the actionable subset is persisted
+        as ``Finding`` objects by :meth:`collect` instead. Modules that have
+        nothing to survey inherit this no-op and are skipped by ``enum``.
+        """
         return []
 
 

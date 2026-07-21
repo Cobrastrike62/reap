@@ -13,6 +13,7 @@ from rich.console import Console as RichConsole
 from .correlation import CorrelationEngine
 from .fingerprint import fingerprint
 from .modules import all_modules, select
+from .modules.base import Module
 from .patterns import proto_for_port
 from .reporter import Reporter
 from .store import LootStore
@@ -51,6 +52,7 @@ class ReapConsole(cmd.Cmd):
         self.sessions: dict = {}
         self.contexts: dict = {}
         self.forwards: dict = {}   # local_port -> {fwd, sid, rhost, rport}
+        self._cwd: dict = {}       # sid -> virtual working directory (see _target_exec)
         self.active = None
 
     # -- banner ----------------------------------------------------------------
@@ -62,12 +64,22 @@ class ReapConsole(cmd.Cmd):
         self.console.print("  post-exploitation loot & credential-reuse framework",
                            style="red")
         self.console.print(f"  loot store: {self.db_path}", style="dim")
-        self.console.print("  register · run · correlate · report      "
+        self.console.print("  register · run · correlate · report", style="dim")
+        self.console.print("  enum (survey) · !<cmd> / interact (run on target)      "
                            "type 'help' to begin\n", style="dim")
 
     # -- helpers ---------------------------------------------------------------
     def emptyline(self):
         pass
+
+    def default(self, line):
+        verb = line.split()[0] if line.split() else line
+        self.console.print(f"[red]unknown reap command:[/] {verb}")
+        if self.active:
+            self.console.print("[dim]to run it on the target: '!"
+                               f"{line.strip()}' (one-off) or 'interact' (remote shell)[/]")
+        else:
+            self.console.print("[dim]type 'help' for commands[/]")
 
     def _resolve(self, arg: str):
         sid = arg.strip() or self.active
@@ -396,6 +408,169 @@ class ReapConsole(cmd.Cmd):
                 fwd.local_port, proto, f"auto -> {sess.host} loopback {proto}/{port}")
             self.console.print(f"  [cyan]auto-forward[/] 127.0.0.1:{fwd.local_port} → "
                                f"{sess.host} loopback {proto}/{port}")
+
+    # -- enum (situational awareness) ------------------------------------------
+    def do_enum(self, line):
+        """enum [filter] — linpeas-style survey of the active session: processes,
+        cron jobs, services, network, kernel. Screen-only situational awareness; the
+        actionable subset (secrets on command lines, writable service/cron targets)
+        is captured as findings by 'run'. Optional [filter] matches module names,
+        e.g. 'enum cron' or 'enum proc'."""
+        sid = self._resolve("")
+        if not sid:
+            return
+        sess = self.sessions[sid]
+        ctx = self.contexts.get(sid)
+        if ctx is None:
+            self._fingerprint(sid)
+            ctx = self.contexts.get(sid)
+        if ctx is None:
+            return
+        filt = line.strip().lower()
+        mods = [m for m in select(ctx)
+                if type(m).enumerate is not Module.enumerate
+                and (not filt or filt in m.name.lower())]
+        if not mods:
+            self.console.print("[dim]no enumeration modules match "
+                               f"{('/' + filt + '/ ') if filt else ''}this context[/]")
+            return
+        for m in mods:
+            try:
+                secs = m.enumerate(sess)
+            except Exception as exc:
+                self.console.print(f"  [red]{m.name} enum errored: {exc}[/]")
+                continue
+            for sec in secs:
+                self.console.rule(f"[bold cyan]{sec.title}[/]", style="cyan")
+                if sec.hint:
+                    self.console.print(f"[dim]# {sec.hint}[/]")
+                if sec.lines:
+                    for ln in sec.lines:
+                        self.console.print(ln, markup=False, highlight=False)
+                else:
+                    self.console.print("[dim](none / not available)[/]")
+        self.console.print()
+
+    def do_survey(self, line):
+        """survey — alias for enum"""
+        self.do_enum(line)
+
+    # -- target shell (breakout) -----------------------------------------------
+    def do_shell(self, line):
+        """shell <cmd>  (or !<cmd>) — run one command on the active session's target
+        and print the output. 'cd <dir>' updates a per-session virtual working
+        directory that persists across later shell/interact commands (an SSH exec is
+        otherwise stateless per call). No PTY: interactive programs (top, vim, a sudo
+        password prompt) won't work — upgrade via pwncat for those."""
+        sid = self._resolve("")
+        if not sid:
+            return
+        cmd = line.strip()
+        if not cmd:
+            self.console.print("usage: !<command>    e.g. !id   |   !ls -la /root")
+            return
+        self._target_exec(sid, cmd, echo=True)
+
+    def do_interact(self, line):
+        """interact [session] — drop into a remote shell on the target: type commands
+        (ls, cd, cat, ...) and they run on the box until you type 'exit' or hit Ctrl-D.
+        'cd' persists across commands. Line-based, no PTY (no top/vim/sudo prompt) —
+        upgrade via pwncat for full interactivity."""
+        sid = self._resolve(line)
+        if not sid:
+            return
+        host = getattr(self.sessions[sid], "host", sid)
+        self.console.print(f"[cyan]interacting with[/] {sid} — 'exit' or Ctrl-D returns "
+                           f"to reap. [dim](line-based; no PTY)[/]")
+        while True:
+            cwd = self._cwd.get(sid) or "~"
+            try:
+                raw = input(f"{host}:{cwd}$ ")
+            except EOFError:
+                self.console.print()
+                break
+            except KeyboardInterrupt:
+                self.console.print("^C")
+                continue
+            cmd = raw.strip()
+            if cmd in ("exit", "quit", "back"):
+                break
+            if not cmd:
+                continue
+            if not self._target_exec(sid, cmd, echo=True):
+                self.console.print("[red]session appears dead — leaving interact[/]")
+                break
+        self.console.print(f"[dim]left interact ({sid})[/]")
+
+    def _target_exec(self, sid, cmd, echo=False, timeout=45) -> bool:
+        """Run one command on a session's target, honoring a per-session virtual cwd.
+        Returns False when the session looks dead (so interact can bail). 'cd' is
+        handled locally: the new directory is resolved on the target and remembered,
+        then prepended to subsequent commands — giving stateful cd on every transport,
+        including SSH whose exec channel is one-shot."""
+        sess = self.sessions.get(sid)
+        if sess is None:
+            self.console.print("[red]no such session[/]")
+            return False
+        win = self._is_windows(sid)
+        stripped = cmd.strip()
+        if stripped == "cd" or stripped.lower().startswith("cd "):
+            target = stripped[2:].strip() or ("%USERPROFILE%" if win else "$HOME")
+            newcwd = self._resolve_cd(sid, target, win)
+            if newcwd is None:
+                if echo:
+                    self.console.print(f"[red]cd: {target}: no such directory[/]")
+            else:
+                self._cwd[sid] = newcwd
+            return True
+        try:
+            res = sess.exec(self._with_cwd(sid, cmd, win), timeout=timeout)
+        except Exception as exc:
+            self.console.print(f"[red]exec failed: {exc}[/]")
+            return False
+        if echo:
+            out = (res.stdout or "").rstrip("\n")
+            err = (res.stderr or "").rstrip("\n")
+            if out:
+                self.console.print(out, markup=False, highlight=False)
+            if err:
+                self.console.print(err, markup=False, highlight=False, style="yellow")
+            if not out and not err and res.exit_code not in (0,):
+                self.console.print(f"[dim](exit {res.exit_code})[/]")
+        return res.exit_code != 124   # 124 = timeout / dead sentinel
+
+    def _with_cwd(self, sid, cmd, win) -> str:
+        cwd = self._cwd.get(sid)
+        if not cwd:
+            return cmd
+        if win:
+            return f'cd /d "{cwd}" && {cmd}'
+        return f"cd {shlex.quote(cwd)} && {cmd}"
+
+    def _resolve_cd(self, sid, target, win):
+        """Resolve 'cd <target>' against the current virtual cwd on the target box;
+        return the new absolute cwd, or None if the directory doesn't exist. Success
+        is gated on '&&' so a failed cd prints nothing and leaves the cwd unchanged."""
+        sess = self.sessions[sid]
+        base = self._cwd.get(sid)
+        if win:
+            prefix = f'cd /d "{base}" && ' if base else ""
+            probe = f"{prefix}cd /d {target} 2>nul && cd"
+        else:
+            prefix = f"cd {shlex.quote(base)} && " if base else ""
+            probe = f"{prefix}cd {target} 2>/dev/null && pwd"
+        try:
+            res = sess.exec(probe, timeout=20)
+        except Exception:
+            return None
+        lines = [ln for ln in res.out.splitlines() if ln.strip()]
+        return lines[-1].strip() if lines else None
+
+    def _is_windows(self, sid) -> bool:
+        ctx = self.contexts.get(sid)
+        if ctx and ctx.os and ctx.os != "unknown":
+            return ctx.os == "windows"
+        return getattr(self.sessions.get(sid), "shell", "") == "cmd"
 
     # -- views -----------------------------------------------------------------
     def do_findings(self, line):

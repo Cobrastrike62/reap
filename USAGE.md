@@ -149,7 +149,55 @@ persists, so correlation spans every hop and gets smarter as you go deeper.
 
 ---
 
-## 5. Command reference
+## 5. Look around — survey the box and run commands on it
+
+Two things you want the moment you land on a box, without leaving reap.
+
+### `enum` — linpeas-style situational awareness
+
+`enum` surveys the active session and prints it to the screen: processes, cron
+jobs, systemd/SysV services, network (interfaces, routes, connections, ARP/DNS),
+and the kernel / OS / sudo versions. It is for **your eyes** — nothing is written
+to the loot DB, so it never clutters `findings`.
+
+```text
+reap> enum                 # full survey
+reap> enum cron            # filter to the cron module
+reap> enum proc            # filter to processes
+```
+
+The **actionable** subset is still captured as ranked findings by `run` (so you
+don't enumerate twice): a secret on a process/cron/service command line becomes a
+credential, a **writable** service binary or cron target becomes a high-severity
+misconfig, an unquoted Windows service path a medium. `enum` reads the room; `run`
+loots it.
+
+### `!<cmd>` and `interact` — a shell on the target
+
+You're shelled into the box; sometimes you just want to `ls` and `cd` around.
+
+- **`!<cmd>`** (alias `shell <cmd>`) runs one command on the active session and
+  prints the output: `!id`, `!ls -la /root`, `!cat /etc/passwd`.
+- **`interact`** drops you into a remote prompt — type commands normally until you
+  `exit` (or hit Ctrl-D):
+  ```text
+  reap> interact
+  10.10.10.5:~$ cd /var/www
+  10.10.10.5:/var/www$ ls
+  index.php  config.php
+  10.10.10.5:/var/www$ exit
+  reap>
+  ```
+
+`cd` persists across commands on **every** transport — reap tracks a virtual
+working directory (an SSH `exec` is otherwise a fresh shell each call, so a naive
+`cd` would be forgotten). Same limit as the raw-shell adapter: line-based, **no
+PTY**, so `top` / `vi` / an interactive `sudo` prompt won't work — stabilize in
+pwncat-vl for those.
+
+---
+
+## 6. Command reference
 
 | command | what it does |
 |---|---|
@@ -158,6 +206,9 @@ persists, so correlation spans every hop and gets smarter as you go deeper.
 | `hosts` | list discovered hosts (persist in the loot DB) |
 | `fingerprint` | re-probe the active session (OS, priv, runtimes) |
 | `run` | collect loot from the active session, then correlate |
+| `enum [filter]` | linpeas-style survey (processes / cron / services / network / kernel); screen-only, optional module-name filter |
+| `!<cmd>` / `shell <cmd>` | run one command on the target (virtual `cd` persists across commands) |
+| `interact` | drop into a line-based remote shell on the target (`exit`/Ctrl-D to leave) |
 | `correlate` | re-test discovered creds against discovered services |
 | `forward <rhost> <rport> [lport]` | tunnel a target-internal service to `127.0.0.1` via the active SSH session (like `ssh -L`) |
 | `forwards` / `unforward <lport>` | list / tear down active port forwards |
@@ -173,7 +224,7 @@ persists, so correlation spans every hop and gets smarter as you go deeper.
 
 ---
 
-## 6. Reaching internal / loopback-only services (port forwarding)
+## 7. Reaching internal / loopback-only services (port forwarding)
 
 Services bound to a target's `127.0.0.1` (a DB, an admin panel, a second SSH) aren't
 reachable from your Kali — but reap can tunnel to them over the session it already holds.
@@ -212,7 +263,7 @@ against the forwarded/internal services automatically.
 
 ---
 
-## 7. Tips
+## 8. Tips
 
 - **Headless / scripted** (or when a webshell sweep is slow): use the driver instead of
   the REPL —
@@ -226,4 +277,6 @@ against the forwarded/internal services automatically.
 - **Editing reap needs no reinstall** — it's an editable install, so new modules/plugins
   load on the next `run`.
 - **Heavy enum wrappers** (LinPEAS/WinPEAS/SharpHound) only fire if you opt in with
-  `export REAP_HEAVY=1` and the tools are on disk.
+  `export REAP_HEAVY=1` and the tools are on disk. The built-in **`enum`** command is
+  the no-drop alternative — it surveys the box natively (no binary to upload or hide),
+  and `run` already captures the privesc-relevant findings it would surface.

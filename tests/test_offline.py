@@ -254,6 +254,128 @@ def test_rawshell_exec_recovers_output_and_exit_code():
     b.close()
 
 
+# --- enumeration modules (linpeas-style) ------------------------------------
+_PS_OUT = (
+    "root 1 /sbin/init\n"
+    "root 5 [kworker/0]\n"                       # kernel thread — filtered
+    "root 42 /tmp/backdoor --daemon\n"           # root proc from writable path
+    "www-data 800 /usr/sbin/apache2 -k start\n"
+    "mysql 900 /usr/sbin/mysqld --password=Sekret123\n"  # secret on cmd line
+)
+
+
+def test_processes_collect_and_enumerate():
+    from reap.modules.primitives.processes import Processes
+    sess = FakeSession({"-o user=": _PS_OUT})
+    findings = Processes().collect(sess)
+    assert any(f.credential and f.credential.secret == "Sekret123" for f in findings)
+    assert any(f.type == "misconfig" and "pid 42" in f.title for f in findings)
+
+    secs = Processes().enumerate(sess)
+    assert len(secs) == 1 and secs[0].title == "Processes"
+    body = "\n".join(secs[0].lines)
+    assert "backdoor" in body and "kworker" not in body   # kthread filtered from dump
+
+
+_CRON_OUT = (
+    "@@SYSTEM@@\n* * * * * root /tmp/evil.sh\n"
+    "@@CRON_D@@\n@@PERIODIC@@\n@@USER@@\n@@SPOOL@@\n@@TIMERS@@\n@@END@@\n"
+)
+
+
+def test_cron_jobs_flags_writable_target():
+    from reap.modules.primitives.cron_jobs import CronJobs
+    sess = FakeSession({"list-timers": _CRON_OUT, "[ -w": "/tmp/evil.sh\n"})
+    findings = CronJobs().collect(sess)
+    assert any(f.severity == "high" and "Writable cron target" in f.title
+               and "/tmp/evil.sh" in f.title for f in findings)
+    secs = {s.title: s for s in CronJobs().enumerate(sess)}
+    assert "/tmp/evil.sh" in "\n".join(secs["System crontab (/etc/crontab)"].lines)
+
+
+_SVC_OUT = (
+    "@@RUNNING@@\napache2.service loaded active running Apache\n"
+    "@@ENABLED@@\napache2.service enabled\n"
+    "@@SYSV@@\n"
+    "@@WRITABLE_UNIT@@\n/etc/systemd/system/evil.service\n"
+    "@@EXECSTART@@\nExecStart=/opt/app/run.sh\n@@END@@\n"
+)
+
+
+def test_init_services_flags_writable_unit_and_execstart():
+    from reap.modules.primitives.init_services import InitServices
+    sess = FakeSession({"list-unit-files": _SVC_OUT, "[ -w": "/opt/app/run.sh\n"})
+    findings = InitServices().collect(sess)
+    titles = " ".join(f.title for f in findings)
+    assert "Writable systemd unit" in titles and "evil.service" in titles
+    assert "Writable service binary" in titles and "/opt/app/run.sh" in titles
+    running = next(s for s in InitServices().enumerate(sess)
+                   if s.title == "Running services")
+    assert "apache2" in "\n".join(running.lines)
+
+
+def test_system_snapshot_persists_kernel_only():
+    from reap.modules.primitives.system_snapshot import SystemSnapshot
+    out = ("@@KERNEL@@\nLinux victim 5.15.0-generic #1 x86_64\n"
+           "@@OSREL@@\nPRETTY_NAME=\"Ubuntu 22.04.3 LTS\"\n@@END@@\n")
+    sess = FakeSession({"uname -a": out})
+    findings = SystemSnapshot().collect(sess)
+    assert len(findings) == 1 and findings[0].type == "info"
+    assert "5.15.0-generic" in findings[0].title
+    assert "Ubuntu 22.04" in findings[0].detail
+    assert any(s.title == "Network — connections" for s in SystemSnapshot().enumerate(sess))
+
+
+def test_enum_modules_registered_and_gated_by_os():
+    from reap.modules import all_modules, select
+    from reap.modules.base import Module
+    names = {m.name for m in all_modules()}
+    assert {"processes", "cron_jobs", "init_services", "system_snapshot",
+            "windows_enum"} <= names
+
+    def surveyors(ctx):
+        return {m.name for m in select(ctx)
+                if type(m).enumerate is not Module.enumerate}
+    lin = surveyors(Context(os="linux"))
+    assert {"processes", "cron_jobs", "init_services", "system_snapshot"} <= lin
+    assert "windows_enum" not in lin                     # windows-only stays off
+    assert "windows_enum" in surveyors(Context(os="windows"))
+
+
+# --- console breakout: virtual cwd + one-off exec ---------------------------
+def test_console_virtual_cwd_persists_across_commands(tmp_path):
+    from reap.console import ReapConsole
+    con = ReapConsole(str(tmp_path / "t.db"))
+    seen: list[str] = []
+
+    class Rec:
+        host = "10.0.0.9"
+        session_id = "s"
+        shell = "sh"
+
+        def exec(self, cmd, timeout=30):
+            seen.append(cmd)
+            if "/nope" in cmd:
+                return Result("", "", 1, 0.0)          # cd failure: pwd never runs
+            if cmd.strip().endswith("pwd"):
+                return Result("/var/www\n", "", 0, 0.0)
+            return Result("index.php\n", "", 0, 0.0)
+
+        def is_alive(self):
+            return True
+
+    con.sessions["s"] = Rec()
+    con.active = "s"
+    con.contexts["s"] = Context(os="linux")
+
+    con._target_exec("s", "cd /var/www")
+    assert con._cwd["s"] == "/var/www"                   # cd remembered
+    con._target_exec("s", "ls")
+    assert "cd /var/www && ls" in seen                   # prefixed onto later commands
+    con._target_exec("s", "cd /nope")
+    assert con._cwd["s"] == "/var/www"                   # failed cd leaves cwd intact
+
+
 # --- chisel reverse forward (exec-only sessions) ----------------------------
 def test_chisel_forward_needs_lhost(monkeypatch):
     import pytest
