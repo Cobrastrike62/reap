@@ -207,6 +207,22 @@ The permission sweep (`interesting_files`) is **scoped and fast** by default —
 
 Unlike the opt-in LinPEAS/WinPEAS wrappers, `enum` needs **nothing on disk** — no binary to upload, drop, or clean up. It runs over the same `exec` channel as everything else, so it works identically over SSH, WinRM, a webshell, or a caught raw shell.
 
+### `ports` — every listening socket, reliably
+
+`ports` lists every local listener on the target. It unions **`ss`**, **`netstat`**, and **`/proc/net/{tcp,tcp6,udp,udp6}`** and dedupes — so a live service is found even on a stripped box where neither `ss` nor `netstat` is installed. That missing fallback is exactly why a running service on `:3000` could look like it didn't exist. `/proc/net` is always present on Linux, needs no root, and is the same table `ss` itself reads: if a socket is listening, this finds it.
+
+```
+reap> ports
+                Listening sockets — ssh:bob@10.10.10.5:22
+ L4    Port   Bind                    Service    Process
+ tcp   22     0.0.0.0                  ssh        sshd
+ tcp   3000   127.0.0.1  (loopback)    http       node
+ tcp   5432   127.0.0.1  (loopback)    postgres   postgres
+ 2 loopback-only — reach with 'forward 127.0.0.1 <port>' (run auto-forwards DB/SSH/etc.)
+```
+
+Loopback-only listeners (a dev server or DB bound to `127.0.0.1`) are flagged, because those are the ones you can't reach from your box until you `forward` them — and `run` auto-forwards the correlate-able ones. The same listener set feeds the `listening_services` collector, so every port also becomes a Service the correlation engine tests credentials against.
+
 ### `!<cmd>` and `interact` — a shell on the target
 
 You're shelled into the box; sometimes you just want to `ls`, `cd`, and `cat` around without leaving reap. Two ways:
@@ -247,6 +263,7 @@ It's **line-based, with no PTY**: send-a-command, read-the-output. Programs that
 | `fingerprint [id]` | re-probe OS, privilege, runtimes |
 | `run [id]` | collect loot, then correlate |
 | `enum [filter]` | linpeas-style survey (processes/cron/services/network/kernel); screen-only |
+| `ports` | every local listening socket (ss + netstat + `/proc/net` union — found even with no ss/netstat); flags loopback-only |
 | `!<cmd>` / `shell <cmd>` / `interact` | run commands on the target — one-off, or a line-based remote shell (`cd` persists) |
 | `correlate` | re-test credentials against services, including pass-the-hash |
 | `forward <rhost> <rport> [lport]` | tunnel a target-internal service to localhost over the SSH session |

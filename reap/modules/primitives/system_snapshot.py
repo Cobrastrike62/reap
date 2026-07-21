@@ -12,6 +12,7 @@ useful in the report and as the anchor for a kernel-exploit lookup.
 from __future__ import annotations
 
 from ...models import EnumSection, Finding
+from ...netinfo import format_listeners, probe_listeners
 from .._probe import sections
 from ..base import Module, register
 
@@ -25,7 +26,6 @@ echo '@@LAST@@'; last -n 12 2>/dev/null | head -n 12
 echo '@@PATH@@'; printf '%s\n' "$PATH"
 echo '@@IFACES@@'; ip -o addr 2>/dev/null || ifconfig -a 2>/dev/null
 echo '@@ROUTES@@'; ip route 2>/dev/null || route -n 2>/dev/null
-echo '@@LISTEN@@'; { ss -lntup 2>/dev/null || netstat -lntup 2>/dev/null; } | head -n 60
 echo '@@ESTAB@@'; { ss -tunp state established 2>/dev/null || netstat -tunp 2>/dev/null; } | head -n 60
 echo '@@ARP@@'; ip neigh 2>/dev/null || arp -a 2>/dev/null
 echo '@@DNS@@'; grep -v '^#' /etc/resolv.conf 2>/dev/null
@@ -68,9 +68,9 @@ class SystemSnapshot(Module):
             EnumSection(title="Network — interfaces & routes",
                         lines=_block(sec, "IFACES", "ROUTES")),
             EnumSection(title="Network — listening sockets",
-                        lines=_block(sec, "LISTEN"),
-                        hint="local listeners; loopback-only ones are auto-forwarded "
-                             "and correlated by 'run'"),
+                        lines=format_listeners(probe_listeners(session)),
+                        hint="unioned from ss + netstat + /proc/net (found even with "
+                             "no ss/netstat); loopback-only ones are auto-forwarded by 'run'"),
             EnumSection(title="Network — established connections",
                         lines=_block(sec, "ESTAB")),
             EnumSection(title="Network — neighbors / DNS / hosts",

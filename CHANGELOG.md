@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.7 — reliable listening-port enumeration (`/proc/net` fallback + `ports`)
+
+- **Fixed: live ports could be missed entirely.** `listening_services` relied on
+  `ss`/`netstat`, which are absent on plenty of minimal targets (containers,
+  stripped images) — on such a box reap saw *no* listeners and a running service
+  (e.g. a web app on `:3000`) looked like it didn't exist. New `reap.netinfo`
+  unions **`ss` + `netstat` + `/proc/net/{tcp,tcp6,udp,udp6}`** and dedupes;
+  `/proc/net` is always present on Linux and needs no root, so if a socket is
+  listening it is now found. UDP listeners and loopback-only binds are picked up
+  too (previously TCP-only).
+- **New `ports` command** — a prominent table of every local listener (transport,
+  port, bind address, guessed service, process), with **loopback-only ports
+  flagged** so it's obvious which need a `forward` to reach. Backed by the same
+  union, so it never under-reports.
+- **`system_snapshot`'s "listening sockets" section now uses the union too**, and
+  loopback services discovered via `/proc` carry a synthesized `127.0.0.1:<port>`
+  address so `run`'s auto-forward still tunnels and correlates them.
+- Tests: 26 → 29 (incl. the exact missed-`:3000` case, parsed from `/proc/net/tcp`
+  with `ss`/`netstat` absent).
+
 ## v1.6 — enum: interesting files & permissions + a dedicated listeners view
 
 - **`interesting_files` — the linpeas "interesting permissions" pass.** `enum` now

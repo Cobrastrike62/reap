@@ -190,6 +190,21 @@ The files-and-permissions sweep is **scoped and fast** by default (curated roots
 root. Set `REAP_ENUM_FULLFS=1` to sweep the whole filesystem like linpeas — slower
 and noisier, so think twice over a raw shell or webshell.
 
+### `ports` — every listening socket, reliably
+
+```text
+reap> ports
+```
+
+`ports` lists every local listener, unioning **ss**, **netstat**, and
+**`/proc/net/{tcp,tcp6,udp,udp6}`**. That last source is the important one: it's
+always present on Linux and needs no root, so a live service is found even on a
+minimal box where neither `ss` nor `netstat` is installed — the gap that used to
+make a running `:3000` look like it didn't exist. Loopback-only ports are flagged
+(reach them with `forward 127.0.0.1 <port>`; `run` auto-forwards the correlate-able
+ones), and the same set feeds `listening_services` so every port becomes a Service
+the correlation engine tests creds against.
+
 ### `!<cmd>` and `interact` — a shell on the target
 
 You're shelled into the box; sometimes you just want to `ls` and `cd` around.
@@ -225,6 +240,7 @@ pwncat-vl for those.
 | `fingerprint` | re-probe the active session (OS, priv, runtimes) |
 | `run` | collect loot from the active session, then correlate |
 | `enum [filter]` | linpeas-style survey (processes / cron / services / network / kernel); screen-only, optional module-name filter |
+| `ports` | every local listening socket, unioned from ss + netstat + `/proc/net` (found even with no ss/netstat); flags loopback-only |
 | `!<cmd>` / `shell <cmd>` | run one command on the target (virtual `cd` persists across commands) |
 | `interact` | drop into a line-based remote shell on the target (`exit`/Ctrl-D to leave) |
 | `correlate` | re-test discovered creds against discovered services |

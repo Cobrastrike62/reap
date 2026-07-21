@@ -14,5 +14,5 @@ import logging as _logging
 for _n in ("paramiko", "paramiko.transport"):
     _logging.getLogger(_n).setLevel(_logging.CRITICAL)
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 __all__ = ["__version__"]

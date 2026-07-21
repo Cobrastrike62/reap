@@ -14,6 +14,7 @@ from .correlation import CorrelationEngine
 from .fingerprint import fingerprint
 from .modules import all_modules, select
 from .modules.base import Module
+from .netinfo import guess_service, probe_listeners
 from .patterns import proto_for_port
 from .reporter import Reporter
 from .store import LootStore
@@ -65,7 +66,7 @@ class ReapConsole(cmd.Cmd):
                            style="red")
         self.console.print(f"  loot store: {self.db_path}", style="dim")
         self.console.print("  register · run · correlate · report", style="dim")
-        self.console.print("  enum (survey) · !<cmd> / interact (run on target)      "
+        self.console.print("  enum · ports · !<cmd> / interact (run on target)      "
                            "type 'help' to begin\n", style="dim")
 
     # -- helpers ---------------------------------------------------------------
@@ -454,6 +455,39 @@ class ReapConsole(cmd.Cmd):
     def do_survey(self, line):
         """survey — alias for enum"""
         self.do_enum(line)
+
+    def do_ports(self, line):
+        """ports [session] — list ALL local listening sockets on the target, unioned
+        from ss + netstat + /proc/net so they're found even on a box with no ss/netstat
+        installed. Loopback-only ports need a 'forward' to reach; 'run' auto-forwards
+        the correlate-able ones (DB/SSH/etc.)."""
+        sid = self._resolve(line)
+        if not sid:
+            return
+        from rich.table import Table
+        try:
+            listeners = probe_listeners(self.sessions[sid])
+        except Exception as exc:
+            self.console.print(f"[red]port probe failed: {exc}[/]")
+            return
+        if not listeners:
+            self.console.print("[yellow]no listening sockets found[/] "
+                               "[dim](checked ss, netstat, and /proc/net)[/]")
+            return
+        table = Table(title=f"Listening sockets — {sid}")
+        for col in ("L4", "Port", "Bind", "Service", "Process"):
+            table.add_column(col)
+        for lis in listeners:
+            loop = lis["kind"] == "loopback"
+            bind = lis["addr"].rsplit(":", 1)[0] + ("  (loopback)" if loop else "")
+            port = f"[yellow]{lis['port']}[/]" if loop else str(lis["port"])
+            table.add_row(lis["proto"], port, bind, guess_service(lis["port"]),
+                          lis["process"] or "-")
+        self.console.print(table)
+        loopn = sum(1 for lis in listeners if lis["kind"] == "loopback")
+        if loopn:
+            self.console.print(f"[dim]{loopn} loopback-only — reach with "
+                               "'forward 127.0.0.1 <port>' (run auto-forwards DB/SSH/etc.)[/]")
 
     # -- target shell (breakout) -----------------------------------------------
     def do_shell(self, line):

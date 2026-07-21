@@ -349,6 +349,45 @@ def test_interesting_files_collect_and_enumerate():
     assert "/usr/local/bin" in "\n".join(secs["Writable directories in $PATH"].lines)
 
 
+# --- robust listener enumeration (the missed-:3000 bug) ---------------------
+# ss/netstat empty (not installed); only /proc/net/tcp has the sockets.
+_PROC_ONLY = (
+    "@@SSTCP@@\n@@SSUDP@@\n@@NET@@\n@@PROC@@\n"
+    "#/proc/net/tcp\n"
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+    "   0: 0100007F:0BB8 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 45678 1\n"
+    "   1: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000    0 0 111 1\n"
+    "#/proc/net/tcp6\n#/proc/net/udp\n#/proc/net/udp6\n@@END@@\n"
+)
+
+
+def test_probe_listeners_finds_port_without_ss():
+    from reap.netinfo import probe_listeners
+    lis = probe_listeners(FakeSession({"@@PROC@@": _PROC_ONLY}))
+    found = {(l["proto"], l["port"], l["kind"]) for l in lis}
+    assert ("tcp", 3000, "loopback") in found      # the :3000 reap used to miss
+    assert ("tcp", 22, "any") in found
+
+
+def test_listening_services_uses_proc_fallback():
+    from reap.modules.primitives.services import ListeningServices
+    findings = ListeningServices().collect(FakeSession({"@@PROC@@": _PROC_ONLY}))
+    svcs = {(f.service.proto, f.service.port) for f in findings if f.service}
+    assert ("http", 3000) in svcs                  # 3000 -> http, now a Service row
+    assert ("ssh", 22) in svcs
+    f3000 = next(f for f in findings if f.service and f.service.port == 3000)
+    assert f3000.service.notes.startswith("127.")  # loopback bind kept for auto-forward
+
+
+def test_probe_listeners_merges_ss_process_onto_proc_port():
+    from reap.netinfo import probe_listeners
+    out = ('@@SSTCP@@\nLISTEN 0 511 0.0.0.0:3000 0.0.0.0:* users:(("node",pid=42,fd=18))\n'
+           "@@SSUDP@@\n@@NET@@\n@@PROC@@\n#/proc/net/tcp\n"
+           "   0: 00000000:0BB8 00000000:0000 0A 0 0 0 0 0 42 1\n@@END@@\n")
+    lis = {l["port"]: l for l in probe_listeners(FakeSession({"@@SSTCP@@": out}))}
+    assert lis[3000]["process"] == "node"          # ss process merged onto the port
+
+
 def test_interesting_files_skipped_as_root():
     from reap.modules.primitives.interesting_files import InterestingFiles
     sess = FakeSession({"@@PATHW@@": "@@UID@@\n0\n@@PATHW@@\n@@ROOTWRITE@@\n@@END@@\n"})
