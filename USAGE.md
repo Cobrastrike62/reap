@@ -155,22 +155,40 @@ Two things you want the moment you land on a box, without leaving reap.
 
 ### `enum` — linpeas-style situational awareness
 
-`enum` surveys the active session and prints it to the screen: processes, cron
-jobs, systemd/SysV services, network (interfaces, routes, connections, ARP/DNS),
-and the kernel / OS / sudo versions. It is for **your eyes** — nothing is written
-to the loot DB, so it never clutters `findings`.
+`enum` surveys the active session and prints it to the screen:
+
+- **processes** — full `ps`, so you can eyeball creds on command lines and
+  root-owned processes running out of writable paths;
+- **cron / scheduled jobs** — `/etc/crontab`, `cron.d`, the periodic run-parts
+  dirs, per-user crontabs, the spool, and `systemd` timers;
+- **services** — running + enabled-at-boot systemd units, and the SysV fallback;
+- **files & permissions** — writable `$PATH` dirs, **root-owned files you can
+  write**, world-writable files/dirs, and files you own in system locations;
+- **system & network** — kernel / distro / sudo version, `PATH`, users,
+  interfaces, routes, **listening sockets**, established connections, ARP, DNS;
+- **Windows** — services (with logon account + binary path), scheduled tasks,
+  and processes with full command lines.
+
+It is for **your eyes** — nothing is written to the loot DB, so it never clutters
+`findings`.
 
 ```text
 reap> enum                 # full survey
 reap> enum cron            # filter to the cron module
 reap> enum proc            # filter to processes
+reap> enum interesting     # just files & permissions
 ```
 
 The **actionable** subset is still captured as ranked findings by `run` (so you
 don't enumerate twice): a secret on a process/cron/service command line becomes a
-credential, a **writable** service binary or cron target becomes a high-severity
-misconfig, an unquoted Windows service path a medium. `enum` reads the room; `run`
-loots it.
+credential; a **writable** service binary, unit file, cron target, `$PATH`
+directory, or root-owned-file-you-can-write becomes a high-severity misconfig; an
+unquoted Windows service path a medium. `enum` reads the room; `run` loots it.
+
+The files-and-permissions sweep is **scoped and fast** by default (curated roots
++ `$PATH`, pseudo-filesystems pruned) and is skipped entirely when you're already
+root. Set `REAP_ENUM_FULLFS=1` to sweep the whole filesystem like linpeas — slower
+and noisier, so think twice over a raw shell or webshell.
 
 ### `!<cmd>` and `interact` — a shell on the target
 

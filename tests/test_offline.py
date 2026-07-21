@@ -323,7 +323,38 @@ def test_system_snapshot_persists_kernel_only():
     assert len(findings) == 1 and findings[0].type == "info"
     assert "5.15.0-generic" in findings[0].title
     assert "Ubuntu 22.04" in findings[0].detail
-    assert any(s.title == "Network — connections" for s in SystemSnapshot().enumerate(sess))
+    assert any(s.title == "Network — listening sockets"
+               for s in SystemSnapshot().enumerate(sess))
+
+
+_IF_OUT = (
+    "@@UID@@\n1000\n"
+    "@@PATHW@@\n/usr/local/bin\n"
+    "@@ROOTWRITE@@\n/etc/cron.daily/backup.sh\n"
+    "@@WORLDW@@\n/var/www/uploads\n"
+    "@@OWN@@\n/etc/app.conf\n@@END@@\n"
+)
+
+
+def test_interesting_files_collect_and_enumerate():
+    from reap.modules.primitives.interesting_files import InterestingFiles
+    sess = FakeSession({"@@PATHW@@": _IF_OUT})       # matches the single probe exec
+    findings = InterestingFiles().collect(sess)
+    titles = " ".join(f.title for f in findings)
+    assert "Writable directory in $PATH: /usr/local/bin" in titles
+    assert "Root-owned file writable by you: /etc/cron.daily/backup.sh" in titles
+    assert findings and all(f.severity == "high" for f in findings)
+    secs = {s.title.split("  [")[0]: s for s in InterestingFiles().enumerate(sess)}
+    assert "/var/www/uploads" in "\n".join(secs["World-writable files & dirs"].lines)
+    assert "/usr/local/bin" in "\n".join(secs["Writable directories in $PATH"].lines)
+
+
+def test_interesting_files_skipped_as_root():
+    from reap.modules.primitives.interesting_files import InterestingFiles
+    sess = FakeSession({"@@PATHW@@": "@@UID@@\n0\n@@PATHW@@\n@@ROOTWRITE@@\n@@END@@\n"})
+    assert InterestingFiles().collect(sess) == []        # meaningless as root
+    secs = InterestingFiles().enumerate(sess)
+    assert len(secs) == 1 and "root" in secs[0].lines[0].lower()
 
 
 def test_enum_modules_registered_and_gated_by_os():
@@ -331,13 +362,14 @@ def test_enum_modules_registered_and_gated_by_os():
     from reap.modules.base import Module
     names = {m.name for m in all_modules()}
     assert {"processes", "cron_jobs", "init_services", "system_snapshot",
-            "windows_enum"} <= names
+            "interesting_files", "windows_enum"} <= names
 
     def surveyors(ctx):
         return {m.name for m in select(ctx)
                 if type(m).enumerate is not Module.enumerate}
     lin = surveyors(Context(os="linux"))
-    assert {"processes", "cron_jobs", "init_services", "system_snapshot"} <= lin
+    assert {"processes", "cron_jobs", "init_services", "system_snapshot",
+            "interesting_files"} <= lin
     assert "windows_enum" not in lin                     # windows-only stays off
     assert "windows_enum" in surveyors(Context(os="windows"))
 

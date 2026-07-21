@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.6 — enum: interesting files & permissions + a dedicated listeners view
+
+- **`interesting_files` — the linpeas "interesting permissions" pass.** `enum` now
+  surveys writable `$PATH` directories, **root-owned files the current user can
+  write**, world-writable files/dirs, and files the user owns in system locations.
+  Framing is deliberate: "writable by root" is meaningless (root writes everything)
+  and "owned by root" is most of the disk, so the module targets what the
+  *unprivileged* user can write — the escalation gold being the root-owned +
+  user-writable intersection. `run` persists the two direct privesc handles (a
+  writable `$PATH` dir, a root-owned file you can write) as **high** misconfigs.
+- **Scoped & fast by default**, with an escape hatch. The sweep hits a curated set
+  of roots plus `$PATH`, pruning `/proc`,`/sys`,`/dev`,`/run`,`/snap` and capping
+  results — quick even over a raw shell. `REAP_ENUM_FULLFS=1` sweeps the whole tree
+  like linpeas. `$HOME`-rooted `$PATH` entries are excluded (your own `~/.local/bin`
+  being writable is not privesc), and the entire sweep is skipped when you're root.
+- **Listening sockets are now their own `enum` section.** `system_snapshot` splits
+  the old combined connections dump into **listening sockets** (`ss -lntup`) and
+  **established connections**, so open ports are called out instead of buried.
+- 29 modules now register (was 28). Tests: 24 → 26.
+
 ## v1.5 — native enumeration (`enum`) + a target shell (`!` / `interact`)
 
 - **`enum` — linpeas-style situational awareness, natively.** Surveys the active

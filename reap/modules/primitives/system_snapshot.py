@@ -25,7 +25,8 @@ echo '@@LAST@@'; last -n 12 2>/dev/null | head -n 12
 echo '@@PATH@@'; printf '%s\n' "$PATH"
 echo '@@IFACES@@'; ip -o addr 2>/dev/null || ifconfig -a 2>/dev/null
 echo '@@ROUTES@@'; ip route 2>/dev/null || route -n 2>/dev/null
-echo '@@CONNS@@'; { ss -tunap 2>/dev/null || netstat -tunap 2>/dev/null; } | head -n 80
+echo '@@LISTEN@@'; { ss -lntup 2>/dev/null || netstat -lntup 2>/dev/null; } | head -n 60
+echo '@@ESTAB@@'; { ss -tunp state established 2>/dev/null || netstat -tunp 2>/dev/null; } | head -n 60
 echo '@@ARP@@'; ip neigh 2>/dev/null || arp -a 2>/dev/null
 echo '@@DNS@@'; grep -v '^#' /etc/resolv.conf 2>/dev/null
 echo '@@HOSTS@@'; grep -vE '^#|^$' /etc/hosts 2>/dev/null
@@ -66,8 +67,12 @@ class SystemSnapshot(Module):
             EnumSection(title="PATH", lines=_block(sec, "PATH")),
             EnumSection(title="Network — interfaces & routes",
                         lines=_block(sec, "IFACES", "ROUTES")),
-            EnumSection(title="Network — connections",
-                        lines=_block(sec, "CONNS")),
+            EnumSection(title="Network — listening sockets",
+                        lines=_block(sec, "LISTEN"),
+                        hint="local listeners; loopback-only ones are auto-forwarded "
+                             "and correlated by 'run'"),
+            EnumSection(title="Network — established connections",
+                        lines=_block(sec, "ESTAB")),
             EnumSection(title="Network — neighbors / DNS / hosts",
                         lines=_block(sec, "ARP", "DNS", "HOSTS")),
         ]

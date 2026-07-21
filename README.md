@@ -168,7 +168,8 @@ Once a session is registered you have two ways to work the host by hand, both fr
 | Processes | `processes` | full process list (kernel threads filtered), so you can spot creds on command lines and root-owned processes running out of writable paths |
 | Cron / scheduled jobs | `cron_jobs` | every source: `/etc/crontab`, `/etc/cron.d`, the hourly/daily/weekly/monthly run-parts dirs, per-user crontabs, the spool, and `systemd` timers |
 | Services | `init_services` | running services, enabled-at-boot services, and the SysV/`init.d` fallback |
-| System & network | `system_snapshot` | kernel, distro, uptime, sudo version, `PATH`, logged-in/recent users, interfaces, routes, active connections, ARP, DNS, `/etc/hosts` |
+| Files & permissions | `interesting_files` | writable `$PATH` directories, **root-owned files you can write**, world-writable files/dirs, and files you own in system locations |
+| System & network | `system_snapshot` | kernel, distro, uptime, sudo version, `PATH`, logged-in/recent users, interfaces, routes, **listening sockets**, established connections, ARP, DNS, `/etc/hosts` |
 | Windows | `windows_enum` | services (with logon account + binary path), scheduled tasks, and processes with full command lines |
 
 ```
@@ -197,9 +198,12 @@ reap> enum system      # kernel, users, and the network sections (system_snapsho
 
 - a secret on a process / cron / service command line → a **credential** (and it's fed straight into correlation);
 - a **writable** `systemd` unit file, a writable binary named in an `ExecStart=`, or a writable file a cron job executes → a **high** misconfig (classic privesc);
+- a writable directory in `$PATH`, or a **root-owned file you can write** → a **high** misconfig;
 - an unquoted Windows service path with a space → a **medium** misconfig.
 
 So in the sample above, `enum` just shows you the `deploy` process; `run` turns that `--db-pass hunter2` into a stored credential that correlation then sprays against every service it knows about.
+
+The permission sweep (`interesting_files`) is **scoped and fast** by default — a curated set of roots plus `$PATH`, pruning the pseudo-filesystems. It focuses on what *you* can write, because "writable by root" is meaningless (root writes everything) and "owned by root" is most of the disk; the escalation gold is the intersection — a root-owned file the current user can write. Set `REAP_ENUM_FULLFS=1` to sweep the entire tree like linpeas (slower and noisier — think twice over a raw shell or webshell). Running as root the sweep is skipped, since every path is writable anyway.
 
 Unlike the opt-in LinPEAS/WinPEAS wrappers, `enum` needs **nothing on disk** — no binary to upload, drop, or clean up. It runs over the same `exec` channel as everything else, so it works identically over SSH, WinRM, a webshell, or a caught raw shell.
 
