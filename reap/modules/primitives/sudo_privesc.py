@@ -8,7 +8,7 @@ ranked finding instead of a lucky grep.
 """
 from __future__ import annotations
 
-from ...models import Finding
+from ...models import EnumFlag, EnumSection, Finding
 from ..base import Module, register
 
 # Standard SUID binaries that are boring; anything else is worth a look.
@@ -35,6 +35,23 @@ class SudoPrivesc(Module):
         findings += self._caps(session)
         findings += self._cron(session)
         return findings
+
+    def enumerate(self, session):
+        """Surface the privesc signals collect() finds as an enum section — this is
+        usually the most important thing on the screen, so it earns loud flags."""
+        findings = self.collect(session)
+        flags, lines = [], []
+        for f in findings:
+            level = "alert" if f.severity == "high" else "notice"
+            flags.append(EnumFlag(text=f.title, level=level,
+                                  reason=(f.detail or f.type)[:140]))
+            lines.append(f"[{f.severity}] {f.title} — {(f.detail or '')[:80]}")
+        return [EnumSection(
+            title="Privilege-escalation signals (sudo / SUID / capabilities / cron)",
+            lines=lines or ["(no obvious sudo / SUID / capability / cron signals)"],
+            hint="sudo -l NOPASSWD, non-standard SUID (check GTFOBins), dangerous file "
+                 "capabilities, writable cron files",
+            flags=flags)]
 
     def _sudo(self, session):
         out = []

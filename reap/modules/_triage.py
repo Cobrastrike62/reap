@@ -52,6 +52,31 @@ def interesting_bin(argv0: str):
     return None
 
 
+# Unix groups that hand you (a path to) root. (level, why).
+DANGEROUS_GROUPS = {
+    "docker": ("alert", "docker group → mount the host fs as root via a container"),
+    "lxd":    ("alert", "lxd group → root via a privileged container"),
+    "lxc":    ("alert", "lxc group → root via a container"),
+    "disk":   ("alert", "disk group → raw block access; read or patch /etc/shadow"),
+    "shadow": ("alert", "shadow group → read /etc/shadow and crack the hashes"),
+    "sudo":   ("notice", "sudo group → you can run sudo (check 'sudo -l')"),
+    "wheel":  ("notice", "wheel group → you can run sudo (check 'sudo -l')"),
+    "adm":    ("notice", "adm group → read system logs (creds/tokens leak there)"),
+    "video":  ("notice", "video group → read the framebuffer / screen contents"),
+}
+
+# Root-owned files whose writability is an instant win — name them loudly.
+CRITICAL_FILES = {"passwd", "shadow", "gshadow", "sudoers", "master.passwd"}
+
+
+def critical_file(path: str):
+    """Return a loud reason if `path` is a security-critical file, else None."""
+    base = (path or "").rstrip("/").rsplit("/", 1)[-1]
+    if base in CRITICAL_FILES or "/sudoers.d/" in (path or ""):
+        return f"writable {base or path} — edit it for instant root"
+    return None
+
+
 def sudo_vuln(version_line: str):
     """CVE note if the sudo version string looks vulnerable to a big local-root
     bug, else None. Deliberately conservative."""

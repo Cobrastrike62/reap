@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.9 — `enum` triage goes deep on privesc
+
+More reach for the "stood out" summary, aimed at real escalation paths:
+
+- **Root-owned things you can influence.** Beyond "a root file you can write",
+  `interesting_files` now flags root-owned files that are **group-writable and
+  you're in that group**, and root-owned files sitting in a **directory you can
+  write** (rename it away, drop your own). Writable `/etc/passwd`/`/etc/shadow`/
+  `/etc/sudoers` are called out loudly ("instant root"). All persisted by `run`.
+- **Fast paths via identity.** `system_snapshot` flags membership in dangerous
+  groups (`docker`, `lxd`, `disk`, `shadow`, `sudo`/`wheel`, `adm`), a **writable
+  `docker.sock`**, and whether you're **in a container** (with escape hints).
+- **Privesc signals in `enum`.** `sudo_privesc` gained an `enumerate()`, so
+  `sudo -l` NOPASSWD, non-standard SUID (GTFOBins), dangerous capabilities, and
+  writable cron files show up in the survey and its summary.
+- **Readable SSH private keys** are flagged (alert if not yours — reuse for
+  lateral/another shell). New triage helpers (`DANGEROUS_GROUPS`, `critical_file`).
+  Tests: 32 → 36.
+
 ## v1.8 — `enum` triage: flag what's out of place, with reasons
 
 `enum` was a raw dump; now it interprets. Each surveyor tags the items that stand

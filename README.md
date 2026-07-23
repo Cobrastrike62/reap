@@ -168,36 +168,44 @@ Once a session is registered you have two ways to work the host by hand, both fr
 | Processes | `processes` | full process list (kernel threads filtered), so you can spot creds on command lines and root-owned processes running out of writable paths |
 | Cron / scheduled jobs | `cron_jobs` | every source: `/etc/crontab`, `/etc/cron.d`, the hourly/daily/weekly/monthly run-parts dirs, per-user crontabs, the spool, and `systemd` timers |
 | Services | `init_services` | running services, enabled-at-boot services, and the SysV/`init.d` fallback |
-| Files & permissions | `interesting_files` | writable `$PATH` directories, **root-owned files you can write**, world-writable files/dirs, and files you own in system locations |
-| System & network | `system_snapshot` | kernel, distro, uptime, sudo version, `PATH`, logged-in/recent users, interfaces, routes, **listening sockets**, established connections, ARP, DNS, `/etc/hosts` |
-| Windows | `windows_enum` | services (with logon account + binary path), scheduled tasks, and processes with full command lines |
+| Privilege escalation | `sudo_privesc` | `sudo -l` NOPASSWD rules, non-standard SUID (GTFOBins candidates), dangerous file capabilities, writable cron files |
+| Files & permissions | `interesting_files` | writable `$PATH` dirs, **root-owned files you can write / are group-writable in your group / sit in a dir you can write**, readable SSH private keys, world-writable, files you own in system locations |
+| System & network | `system_snapshot` | kernel, distro, uptime, sudo version, `PATH`, users, **dangerous group membership + container / docker-socket access**, interfaces, routes, **listening sockets**, established connections, ARP, DNS |
+| Windows | `windows_enum` | services (logon account + binary path), scheduled tasks, and processes with full command lines |
 
 Each section leads with a **⚑ worth a look** block — the items reap thinks are *out of place*, each with a one-line reason — followed by the full raw listing (dimmed, for completeness). At the end, `enum` prints a **summary** of everything flagged across every section, split into *worth acting on* (red) and *worth a look* (yellow), so you get a punch-list instead of a wall of text.
 
-The heuristic doing most of the work: anything running from — or referencing — a path **outside the base system** (`/opt`, `/home`, `/srv`, `/usr/local`, `/tmp` …). That's where the target app, an operator's custom daemon, or a dropped payload lives, while the distro's own files sit in `/usr`,`/bin`,`/sbin`,`/lib`. On top of that it flags secrets on command lines, operator/attacker tools (`nc`, `socat`, `tmux`, `tcpdump` …), vulnerable `sudo` versions, extra UID-0 accounts, writable `$PATH` directories, root-owned-but-you-can-write files, and loopback-only services worth forwarding.
+The heuristic doing most of the work: anything running from — or referencing — a path **outside the base system** (`/opt`, `/home`, `/srv`, `/usr/local`, `/tmp` …). That's where the target app, an operator's custom daemon, or a dropped payload lives, while the distro's own files sit in `/usr`,`/bin`,`/sbin`,`/lib`. On top of that it flags:
+
+- **root-owned things you can influence** — a root file you can write, one that's *group-writable and you're in the group*, or one sitting in a *directory you can write* (rename it away, drop your own). Writable `/etc/passwd` / `/etc/shadow` / `/etc/sudoers` are called out loudly.
+- **a fast path via your groups** — membership in `docker`, `lxd`, `disk`, `shadow`, `sudo`/`wheel`, `adm`; a **writable `docker.sock`**; or the fact that you're **in a container** (with escape hints).
+- **privesc signals** — `sudo -l` NOPASSWD, non-standard SUID (GTFOBins), dangerous capabilities, writable cron.
+- **the rest** — secrets on command lines, operator/attacker tools (`nc`, `socat`, `tmux`, `tcpdump` …), vulnerable `sudo` (Baron Samedit &c.), the kernel (with a `searchsploit` pointer), extra UID-0 accounts, writable `$PATH` dirs, readable SSH private keys, and loopback / exposed services.
 
 ```
 reap> enum
+──────────────── Privilege context (groups / container) ───────────
+⚑ worth a look:
+  ! member of group 'docker'  — docker group → mount the host fs as root via a container
 ──────────────────────────── Processes ────────────────────────────
 ⚑ worth a look:
   ! www-data 1841 node /opt/app/server.js --db-pass hunter2  — secret on the command line
-  • postgres  712 postgres: 13/main: writer process           — postgres — interpreter/app
   full listing:
-  root           1 /sbin/init
-  … (dimmed full ps output) …
-─────────────────────── Services — worth a look ───────────────────
+  root 1 /sbin/init  … (dimmed full ps output) …
+────────────── Root-owned files writable via your group ───────────
 ⚑ worth a look:
-  • nessusd.service: /opt/nessus/sbin/nessus-service  — service runs /opt/nessus (outside base system)
+  ! /opt/app/shared/config.rb  — root-owned & group-writable via your 'devs' group
 ─────────────────────────────── System ───────────────────────────
 ⚑ worth a look:
   ! Sudo version 1.8.21p2  — CVE-2021-3156 'Baron Samedit' heap overflow → root
   • kernel 5.15.0-generic  — check 'searchsploit linux kernel 5.15' for a local-root exploit
-──────────────────── enum summary — 4 thing(s) stood out ──────────
-! worth acting on (2):
+──────────────────── enum summary — 5 thing(s) stood out ──────────
+! worth acting on (4):
+   member of group 'docker' (Privilege context) — mount the host fs as root via a container
    www-data 1841 node /opt/app/... (Processes) — secret on the command line
+   /opt/app/shared/config.rb (…your group) — root-owned & group-writable via 'devs'
    Sudo version 1.8.21p2 (System) — CVE-2021-3156 'Baron Samedit' → root
-• worth a look (2):
-   nessusd.service: /opt/nessus/... (Services) — runs /opt/nessus (outside base system)
+• worth a look (1):
    kernel 5.15.0-generic (System) — check 'searchsploit linux kernel 5.15'
 ```
 

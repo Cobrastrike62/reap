@@ -162,12 +162,16 @@ Two things you want the moment you land on a box, without leaving reap.
 - **cron / scheduled jobs** — `/etc/crontab`, `cron.d`, the periodic run-parts
   dirs, per-user crontabs, the spool, and `systemd` timers;
 - **services** — running + enabled-at-boot systemd units, and the SysV fallback;
+- **privilege escalation** — `sudo -l` NOPASSWD, non-standard SUID (GTFOBins),
+  dangerous file capabilities, writable cron files;
 - **files & permissions** — writable `$PATH` dirs, **root-owned files you can
-  write**, world-writable files/dirs, and files you own in system locations;
+  write, that are group-writable in a group you're in, or that sit in a directory
+  you can write**, readable SSH private keys, world-writable, files you own;
 - **system & network** — kernel / distro / sudo version, `PATH`, users,
-  interfaces, routes, **listening sockets**, established connections, ARP, DNS;
-- **Windows** — services (with logon account + binary path), scheduled tasks,
-  and processes with full command lines.
+  **dangerous group membership (docker/lxd/disk/shadow/…) + container / writable
+  docker.sock**, interfaces, routes, **listening sockets**, connections, ARP, DNS;
+- **Windows** — services (logon account + binary path), scheduled tasks, and
+  processes with full command lines.
 
 Every section leads with a **⚑ worth a look** block — the items reap judges *out
 of place*, each with a one-line reason — then the full raw listing (dimmed).
@@ -175,10 +179,13 @@ of place*, each with a one-line reason — then the full raw listing (dimmed).
 into *worth acting on* (red) and *worth a look* (yellow), so you get a punch-list
 instead of a wall of text. The main heuristic: anything running from / referencing
 a path **outside the base system** (`/opt`, `/home`, `/srv`, `/usr/local`, `/tmp`
-…) — plus secrets on command lines, operator tools (`nc`, `socat`, `tmux` …),
-vulnerable `sudo`, extra UID-0 accounts, writable `$PATH` dirs, root-owned files
-you can write, and loopback-only services. It is for **your eyes** — nothing is
-written to the loot DB, so it never clutters `findings`.
+…) — plus root-owned things you can influence (writable, group-writable in your
+group, or in a dir you can write), a fast path via your groups (docker/lxd/disk/
+shadow/sudo) or a writable docker socket, `sudo -l`/SUID/capabilities, secrets on
+command lines, operator tools, vulnerable `sudo`, the kernel (with a `searchsploit`
+pointer), extra UID-0 accounts, readable SSH keys, and loopback/exposed services.
+It is for **your eyes** — nothing is written to the loot DB, so it never clutters
+`findings`.
 
 ```text
 reap> enum                 # full survey (flags + raw + summary)
@@ -190,8 +197,9 @@ reap> enum interesting     # just files & permissions
 The **actionable** subset is still captured as ranked findings by `run` (so you
 don't enumerate twice): a secret on a process/cron/service command line becomes a
 credential; a **writable** service binary, unit file, cron target, `$PATH`
-directory, or root-owned-file-you-can-write becomes a high-severity misconfig; an
-unquoted Windows service path a medium. `enum` reads the room; `run` loots it.
+directory, or a root-owned file you can write (outright, via your group, or via a
+writable parent dir) becomes a high-severity misconfig; an unquoted Windows service
+path a medium. `enum` reads the room; `run` loots it.
 
 The files-and-permissions sweep is **scoped and fast** by default (curated roots
 + `$PATH`, pseudo-filesystems pruned) and is skipped entirely when you're already

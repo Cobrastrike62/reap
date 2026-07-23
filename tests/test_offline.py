@@ -431,6 +431,61 @@ def test_probe_listeners_merges_ss_process_onto_proc_port():
     assert lis[3000]["process"] == "node"          # ss process merged onto the port
 
 
+def test_triage_groups_and_critical_files():
+    from reap.modules._triage import DANGEROUS_GROUPS, critical_file
+    assert DANGEROUS_GROUPS["docker"][0] == "alert"
+    assert "instant root" in (critical_file("/etc/shadow") or "")
+    assert critical_file("/etc/sudoers.d/mine")
+    assert critical_file("/opt/app/config.yml") is None
+
+
+def test_interesting_files_ownership_exploitable():
+    from reap.modules.primitives.interesting_files import InterestingFiles
+    out = (
+        "@@UID@@\n1000\n"
+        "@@MYGROUPS@@\nkali devs\n"
+        "@@PATHW@@\n"
+        "@@ROOTWRITE@@\n/etc/passwd\n"
+        "@@ROOTGRPW@@\ndevs|/opt/app/config.yml\nroot|/etc/other\n"
+        "@@ROOTDIRW@@\n/home/kali/deploy/root_script.sh\n"
+        "@@SSHKEYS@@\n/home/victim/.ssh/id_rsa\n"
+        "@@WORLDW@@\n@@OWN@@\n@@END@@\n"
+    )
+    sess = FakeSession({"@@ROOTGRPW@@": out})
+    titles = " ".join(f.title for f in InterestingFiles().collect(sess))
+    detail = " ".join(f.detail for f in InterestingFiles().collect(sess))
+    assert "instant root" in detail                              # /etc/passwd critical
+    assert "group-writable via devs: /opt/app/config.yml" in titles
+    assert "/etc/other" not in titles                            # group 'root' not mine
+    assert "in a dir you can write: /home/kali/deploy/root_script.sh" in titles
+
+    secs = {s.title: s for s in InterestingFiles().enumerate(sess)}
+    keyflags = secs["Readable SSH private keys"].flags
+    assert any(f.level == "alert" and "not yours" in f.reason for f in keyflags)
+
+
+def test_sudo_privesc_enumerate_flags():
+    from reap.modules.primitives.sudo_privesc import SudoPrivesc
+    sess = FakeSession({"sudo -n -l": "(root) NOPASSWD: /usr/bin/vim"})
+    secs = SudoPrivesc().enumerate(sess)
+    assert len(secs) == 1
+    assert any(f.level == "alert" and "NOPASSWD" in f.text for f in secs[0].flags)
+
+
+def test_system_snapshot_priv_context_flags():
+    from reap.modules.primitives.system_snapshot import SystemSnapshot
+    out = ("@@KERNEL@@\nLinux h 5.15.0 x86_64\n"
+           "@@GROUPS@@\nuid=1000(bob) gid=1000(bob) groups=1000(bob),998(docker)\n"
+           "groups: bob docker\n"
+           "@@CONTAINER@@\ndockerenv\ndocker-sock-writable\n@@END@@\n")
+    secs = {s.title: s
+            for s in SystemSnapshot().enumerate(FakeSession({"uname -a": out}))}
+    pf = secs["Privilege context (groups / container)"].flags
+    assert any(f.level == "alert" and "docker" in f.reason for f in pf)  # docker group
+    assert any("docker socket" in f.reason for f in pf)                  # writable sock
+    assert any("container" in f.text.lower() for f in pf)                # in a container
+
+
 def test_interesting_files_skipped_as_root():
     from reap.modules.primitives.interesting_files import InterestingFiles
     sess = FakeSession({"@@PATHW@@": "@@UID@@\n0\n@@PATHW@@\n@@ROOTWRITE@@\n@@END@@\n"})

@@ -14,7 +14,7 @@ from __future__ import annotations
 from ...models import EnumFlag, EnumSection, Finding
 from ...netinfo import format_listeners, guess_service, probe_listeners
 from .._probe import sections
-from .._triage import sudo_vuln
+from .._triage import DANGEROUS_GROUPS, sudo_vuln
 from ..base import Module, register
 
 # App-level protos worth calling out among listeners.
@@ -36,6 +36,8 @@ echo '@@ESTAB@@'; { ss -tunp state established 2>/dev/null || netstat -tunp 2>/d
 echo '@@ARP@@'; ip neigh 2>/dev/null || arp -a 2>/dev/null
 echo '@@DNS@@'; grep -v '^#' /etc/resolv.conf 2>/dev/null
 echo '@@HOSTS@@'; grep -vE '^#|^$' /etc/hosts 2>/dev/null
+echo '@@GROUPS@@'; id 2>/dev/null; echo "groups: $(id -Gn 2>/dev/null)"
+echo '@@CONTAINER@@'; { test -f /.dockerenv && echo dockerenv; }; grep -qE 'docker|lxc|kubepods|containerd' /proc/1/cgroup 2>/dev/null && echo cgroup-container; { [ -w /var/run/docker.sock ] || [ -w /run/docker.sock ]; } && echo docker-sock-writable; ls -ln /var/run/docker.sock /run/docker.sock 2>/dev/null
 echo '@@END@@'
 """.strip()
 
@@ -69,6 +71,11 @@ class SystemSnapshot(Module):
                         lines=_block(sec, "KERNEL", "OSREL", "UPTIME", "SUDO"),
                         hint="kernel + sudo version vs known local-root CVEs",
                         flags=self._system_flags(sec)),
+            EnumSection(title="Privilege context (groups / container)",
+                        lines=_block(sec, "GROUPS", "CONTAINER"),
+                        hint="dangerous group membership and container/docker-socket "
+                             "access are fast paths to root",
+                        flags=self._priv_flags(sec)),
             EnumSection(title="Users & accounts",
                         lines=_block(sec, "WHO", "LAST"),
                         flags=self._user_flags(sec)),
@@ -99,6 +106,27 @@ class SystemSnapshot(Module):
             flags.append(EnumFlag(
                 text=f"kernel {ver}", level="notice",
                 reason=f"check 'searchsploit linux kernel {mm}' for a local-root exploit"))
+        return flags
+
+    def _priv_flags(self, sec) -> list:
+        flags = []
+        groups = sec.get("GROUPS", "")
+        mine = groups.split("groups:", 1)[-1].split() if "groups:" in groups else \
+            groups.split()
+        for g in mine:
+            hit = DANGEROUS_GROUPS.get(g)
+            if hit:
+                flags.append(EnumFlag(text=f"member of group '{g}'",
+                                      level=hit[0], reason=hit[1]))
+        cont = sec.get("CONTAINER", "").lower()
+        if "docker-sock-writable" in cont:
+            flags.append(EnumFlag(text="/var/run/docker.sock is writable", level="alert",
+                                  reason="writable docker socket → run a container that "
+                                         "mounts the host fs as root"))
+        if "dockerenv" in cont or "cgroup-container" in cont:
+            flags.append(EnumFlag(text="running inside a container", level="notice",
+                                  reason="check for escape: privileged flag, mounted host "
+                                         "paths, CAP_SYS_ADMIN, writable docker.sock"))
         return flags
 
     def _user_flags(self, sec) -> list:
