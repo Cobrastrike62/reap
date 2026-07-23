@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.8 — `enum` triage: flag what's out of place, with reasons
+
+`enum` was a raw dump; now it interprets. Each surveyor tags the items that stand
+out and `enum` renders them as a **⚑ worth a look** block above the (still verbose)
+raw listing, then closes with a cross-section **summary** split into *worth acting
+on* (red) and *worth a look* (yellow) — a punch-list instead of a wall of text.
+
+- **Core heuristic (`reap/modules/_triage.py`): "outside the base system."** Anything
+  running from or referencing `/opt`, `/home`, `/srv`, `/usr/local`, `/tmp` … is
+  flagged, since that's where the target app, an operator's daemon, or a dropped
+  payload lives while the distro's files sit in `/usr`,`/bin`,`/sbin`,`/lib`. This
+  one rule surfaces custom services, custom cron scripts, and app processes.
+- **Per surveyor:** processes flag non-system paths / interpreters / operator tools
+  (`nc`,`socat`,`tmux`…) / secrets on the command line; cron & services flag jobs
+  and `ExecStart=` binaries outside the base system (and writable ones); system
+  flags a **vulnerable `sudo`** (CVE-2021-3156 Baron Samedit, CVE-2019-14287), the
+  **kernel** (with a `searchsploit` pointer), and **extra UID-0 accounts**; the
+  files sweep flags writable `$PATH` dirs and root-owned-but-writable files;
+  listeners flag loopback-only and exposed DB/web services. Windows flags unquoted
+  service paths, non-standard logon accounts, and binaries under user/temp dirs.
+- **Tuned for signal over noise:** flags are de-duplicated; world-writable files
+  stay in the raw section but are no longer summarized (too noisy); `$HOME`- and
+  `/mnt`/`/media`-rooted `$PATH` entries are excluded. New `EnumFlag` model; the
+  raw dumps are unchanged (kept for completeness). Tests: 29 → 32.
+
 ## v1.7 — reliable listening-port enumeration (`/proc/net` fallback + `ports`)
 
 - **Fixed: live ports could be missed entirely.** `listening_services` relied on

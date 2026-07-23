@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 
-from ...models import EnumSection, Finding
+from ...models import EnumFlag, EnumSection, Finding
 from .._probe import sections
 from ..base import Module, register
 
@@ -48,7 +48,8 @@ def _probe_script(fullfs: bool) -> str:
         "echo '@@PATHW@@'",
         '[ "$(id -u)" != 0 ] && { IFS=:; for d in $PATH; do '
         '[ -d "$d" ] && [ -w "$d" ] || continue; '
-        'case "$d" in "$HOME"|"$HOME"/*) ;; *) printf "%s\\n" "$d";; esac; '
+        'case "$d" in "$HOME"|"$HOME"/*|/mnt/*|/media/*) ;; '
+        '*) printf "%s\\n" "$d";; esac; '
         'done; }',
         # Root-owned files the current user can write — the escalation gold.
         "echo '@@ROOTWRITE@@'",
@@ -92,25 +93,34 @@ class InterestingFiles(Module):
                 lines=["(running as root — every path is writable; "
                        "privesc-by-permission checks are moot)"])]
         scope = "full /" if os.environ.get("REAP_ENUM_FULLFS") else "scoped roots"
+        pathw = sec.get("PATHW", "").splitlines()
+        rootw = sec.get("ROOTWRITE", "").splitlines()
+        worldw = sec.get("WORLDW", "").splitlines()
+        own = sec.get("OWN", "").splitlines()
+
+        def flg(lines, level, reason, cap=15):
+            return [EnumFlag(text=ln.strip(), level=level, reason=reason)
+                    for ln in lines[:cap] if ln.strip()]
+
         return [
             EnumSection(
-                title=f"Writable directories in $PATH  [{scope}]",
-                lines=sec.get("PATHW", "").splitlines(),
+                title=f"Writable directories in $PATH  [{scope}]", lines=pathw,
                 hint="drop a binary named like a command here to hijack it when a "
-                     "higher-priv user or process runs that command"),
+                     "higher-priv user or process runs that command",
+                flags=flg(pathw, "alert", "writable $PATH dir — command-hijack primitive")),
             EnumSection(
-                title="Root-owned files you can write",
-                lines=sec.get("ROOTWRITE", "").splitlines(),
+                title="Root-owned files you can write", lines=rootw,
                 hint="if a root cron/service/login path reads or runs one of these, "
-                     "editing it is direct privesc (captured by 'run')"),
+                     "editing it is direct privesc (captured by 'run')",
+                flags=flg(rootw, "alert",
+                          "root-owned and you can write it — privesc if root consumes it")),
             EnumSection(
-                title="World-writable files & dirs",
-                lines=sec.get("WORLDW", "").splitlines(),
-                hint="anyone can modify these; interesting if something trusted "
-                     "consumes them"),
+                title="World-writable files & dirs", lines=worldw,
+                hint="anyone can modify these; noisy, so not summarized — skim for "
+                     "one a trusted process consumes"),
             EnumSection(
-                title="Files you own in system locations",
-                lines=sec.get("OWN", "").splitlines()),
+                title="Files you own in system locations", lines=own,
+                flags=flg(own, "notice", "you own this in a system location")),
         ]
 
     # -- collect (persist the two privesc handles) -----------------------------

@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import re
 
-from ...models import EnumSection, Finding
+from ...models import EnumFlag, EnumSection, Finding
 from ...patterns import scan_line
 from .._probe import sections, writable_targets
+from .._triage import interesting_path
 from ..base import Module, register
 
 _CRON_PROBE = r"""
@@ -64,7 +65,13 @@ class CronJobs(Module):
     # -- enumerate (screen) ----------------------------------------------------
     def enumerate(self, session):
         sec = self._survey(session)
+        flags = self._flags(sec)
         out = []
+        if flags:
+            out.append(EnumSection(
+                title="Cron jobs — worth a look", flags=flags,
+                hint="jobs invoking scripts outside the base system (and secrets on "
+                     "the line); writable targets are captured by 'run'"))
         for name, title in (
             ("SYSTEM", "System crontab (/etc/crontab)"),
             ("CRON_D", "/etc/cron.d"),
@@ -76,9 +83,25 @@ class CronJobs(Module):
             body = sec.get(name, "")
             out.append(EnumSection(title=title,
                                    lines=body.splitlines() if body else []))
-        out[0].hint = ("writable targets and secrets on these lines are captured "
-                       "by 'run'")
         return out
+
+    def _flags(self, sec) -> list:
+        flags = []
+        for line in self._job_lines(sec):
+            if any(f.credential for f in scan_line(line, "cron")):
+                flags.append(EnumFlag(text=line[:140], level="alert",
+                                      reason="secret in cron entry"))
+                continue
+            path = interesting_path(line)
+            if path:
+                root = re.search(r"\broot\b", line) is not None
+                flags.append(EnumFlag(
+                    text=line[:140], level="alert" if root else "notice",
+                    reason=f"cron runs {path}" + (" as root" if root else "")
+                           + " (outside base system)"))
+            if len(flags) >= 30:
+                break
+        return flags
 
     # -- collect (persist actionable subset) -----------------------------------
     def collect(self, session):

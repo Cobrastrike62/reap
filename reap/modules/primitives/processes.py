@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import re
 
-from ...models import Credential, EnumSection, Finding
+from ...models import Credential, EnumFlag, EnumSection, Finding
 from ...patterns import inline_cmdline_secret, mask, scan_line
+from .._triage import interesting_bin, interesting_path
 from ..base import Module, register
 
 # `-ww` = don't truncate long command lines (that is where the secrets hide);
@@ -73,12 +74,44 @@ class Processes(Module):
         lines = [f"{u:<12.12} {pid:>7} {args}" for u, pid, args in rows[:_MAX_ROWS]]
         if len(rows) > _MAX_ROWS:
             lines.append(f"... ({len(rows) - _MAX_ROWS} more; refine with grep)")
+        flags = []
+        for user, pid, args in rows:
+            fl = self._flag_row(user, pid, args)
+            if fl:
+                flags.append(fl)
+            if len(flags) >= 40:
+                break
         return [EnumSection(
             title="Processes",
             lines=lines or ["(ps returned nothing)"],
-            hint="look for creds on command lines and root-owned procs from "
-                 "writable paths (both are auto-captured by 'run')",
+            hint="flagged: non-system paths, interpreters/tools, secrets on the "
+                 "command line (root-owned + writable ones are captured by 'run')",
+            flags=flags,
         )]
+
+    def _has_secret(self, args):
+        if any(f.credential for f in scan_line(args, "cmdline")):
+            return True
+        return any(inline_cmdline_secret(m.group(1)) for m in _CMD_PW.finditer(args))
+
+    def _flag_row(self, user, pid, args):
+        label = f"{user} {pid} {args}".strip()
+        if len(label) > 140:
+            label = label[:137] + "..."
+        if self._has_secret(args):
+            return EnumFlag(text=label, level="alert",
+                            reason="secret on the command line")
+        ip = interesting_path(args)
+        if ip:
+            root = user == "root"
+            return EnumFlag(text=label, level="alert" if root else "notice",
+                            reason=f"runs from {ip}{' as root' if root else ''} "
+                                   "(outside the base system)")
+        ib = interesting_bin(args.split()[0] if args.split() else "")
+        if ib:
+            kind = "operator/attacker tool" if ib[0] == "tool" else "interpreter/app"
+            return EnumFlag(text=label, level="notice", reason=f"{ib[1]} — {kind}")
+        return None
 
     # -- collect (persist actionable subset) -----------------------------------
     def collect(self, session):

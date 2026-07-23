@@ -78,6 +78,20 @@ class Finding:
 
 
 @dataclass
+class EnumFlag:
+    """Something inside an enum section that stands out, with a reason.
+
+    This is the triage layer over the raw dump: the ``enum`` view renders flags
+    prominently (in colour) above the full listing and aggregates them into a
+    summary, so the operator sees *what to look at* rather than only *everything*.
+    """
+
+    text: str                       # the item (a process / cron / service / port line)
+    reason: str                     # why it's worth a look
+    level: str = "notice"           # "alert" (red, likely important) | "notice" (yellow)
+
+
+@dataclass
 class EnumSection:
     """A block of situational-awareness output for the console ``enum`` view
     (linpeas-style: processes, services, crons, network, kernel).
@@ -86,8 +100,12 @@ class EnumSection:
     routes the actionable subset (secrets in a command line, a writable service /
     cron target) into the loot store as ranked ``Finding`` objects via ``collect``;
     ``enumerate`` is only the human-readable dump.
+
+    ``flags`` is the triage layer: items in this section that stand out, surfaced
+    above the raw ``lines`` and rolled up into the end-of-``enum`` summary.
     """
 
     title: str
     lines: list[str] = field(default_factory=list)
     hint: str = ""                  # one line on why it matters / what to check
+    flags: list["EnumFlag"] = field(default_factory=list)

@@ -435,6 +435,7 @@ class ReapConsole(cmd.Cmd):
             self.console.print("[dim]no enumeration modules match "
                                f"{('/' + filt + '/ ') if filt else ''}this context[/]")
             return
+        all_flags = []   # (section_title, EnumFlag) rolled up into the summary
         for m in mods:
             try:
                 secs = m.enumerate(sess)
@@ -445,11 +446,53 @@ class ReapConsole(cmd.Cmd):
                 self.console.rule(f"[bold cyan]{sec.title}[/]", style="cyan")
                 if sec.hint:
                     self.console.print(f"[dim]# {sec.hint}[/]")
+                uniq, seen = [], set()
+                for fl in sec.flags:
+                    key = (fl.level, fl.text, fl.reason)
+                    if key not in seen:
+                        seen.add(key)
+                        uniq.append(fl)
+                if uniq:
+                    self.console.print("[bold]⚑ worth a look:[/]")
+                    for fl in uniq:
+                        self._print_flag(fl)
+                        all_flags.append((sec.title, fl))
+                    if sec.lines:
+                        self.console.print("[dim]  full listing:[/]")
                 if sec.lines:
                     for ln in sec.lines:
-                        self.console.print(ln, markup=False, highlight=False)
-                else:
+                        self.console.print(ln, markup=False, highlight=False, style="dim")
+                elif not sec.flags:
                     self.console.print("[dim](none / not available)[/]")
+        self._enum_summary(all_flags)
+
+    def _print_flag(self, fl):
+        from rich.markup import escape
+        mark, color = ("!", "bold red") if fl.level == "alert" else ("•", "yellow")
+        text = fl.text if len(fl.text) <= 120 else fl.text[:117] + "..."
+        self.console.print(f"  [{color}]{mark} {escape(text)}[/]  "
+                           f"[dim]— {escape(fl.reason)}[/]")
+
+    def _enum_summary(self, all_flags):
+        from rich.markup import escape
+        if not all_flags:
+            self.console.rule("[bold cyan]enum summary[/]", style="cyan")
+            self.console.print("[dim]nothing stood out — the box looks close to stock. "
+                               "Still worth a manual skim of the sections above.[/]\n")
+            return
+        alerts = [(t, f) for t, f in all_flags if f.level == "alert"]
+        notices = [(t, f) for t, f in all_flags if f.level != "alert"]
+        self.console.rule(f"[bold cyan]enum summary — {len(all_flags)} thing(s) stood "
+                          f"out[/]", style="cyan")
+        for label, color, mark, group in (
+                ("worth acting on", "bold red", "!", alerts),
+                ("worth a look", "yellow", "•", notices)):
+            if not group:
+                continue
+            self.console.print(f"[{color}]{mark} {label} ({len(group)}):[/]")
+            for sect, fl in group:
+                self.console.print(f"   [{color}]{escape(fl.text[:100])}[/] "
+                                   f"[dim]({escape(sect)}) — {escape(fl.reason)}[/]")
         self.console.print()
 
     def do_survey(self, line):

@@ -11,16 +11,22 @@ useful in the report and as the anchor for a kernel-exploit lookup.
 """
 from __future__ import annotations
 
-from ...models import EnumSection, Finding
-from ...netinfo import format_listeners, probe_listeners
+from ...models import EnumFlag, EnumSection, Finding
+from ...netinfo import format_listeners, guess_service, probe_listeners
 from .._probe import sections
+from .._triage import sudo_vuln
 from ..base import Module, register
+
+# App-level protos worth calling out among listeners.
+_INTERESTING_SVC = {"ssh", "mysql", "postgres", "mongodb", "mssql", "redis",
+                    "http", "https", "winrm", "smb", "ftp"}
 
 _SYS_PROBE = r"""
 echo '@@KERNEL@@'; uname -a 2>/dev/null
 echo '@@OSREL@@'; grep -E 'PRETTY_NAME|^VERSION=' /etc/os-release 2>/dev/null
 echo '@@UPTIME@@'; uptime 2>/dev/null
 echo '@@SUDO@@'; sudo --version 2>/dev/null | head -n 1
+echo '@@PASSWD@@'; getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null
 echo '@@WHO@@'; who 2>/dev/null
 echo '@@LAST@@'; last -n 12 2>/dev/null | head -n 12
 echo '@@PATH@@'; printf '%s\n' "$PATH"
@@ -57,25 +63,72 @@ class SystemSnapshot(Module):
     # -- enumerate (screen) ----------------------------------------------------
     def enumerate(self, session):
         sec = self._survey(session)
+        listeners = probe_listeners(session)
         return [
             EnumSection(title="System",
                         lines=_block(sec, "KERNEL", "OSREL", "UPTIME", "SUDO"),
-                        hint="check the kernel + sudo version against known "
-                             "local-privesc CVEs"),
-            EnumSection(title="Users (logged-in / recent)",
-                        lines=_block(sec, "WHO", "LAST")),
+                        hint="kernel + sudo version vs known local-root CVEs",
+                        flags=self._system_flags(sec)),
+            EnumSection(title="Users & accounts",
+                        lines=_block(sec, "WHO", "LAST"),
+                        flags=self._user_flags(sec)),
             EnumSection(title="PATH", lines=_block(sec, "PATH")),
             EnumSection(title="Network — interfaces & routes",
                         lines=_block(sec, "IFACES", "ROUTES")),
             EnumSection(title="Network — listening sockets",
-                        lines=format_listeners(probe_listeners(session)),
+                        lines=format_listeners(listeners),
                         hint="unioned from ss + netstat + /proc/net (found even with "
-                             "no ss/netstat); loopback-only ones are auto-forwarded by 'run'"),
+                             "no ss/netstat); loopback-only ones are auto-forwarded by 'run'",
+                        flags=self._listen_flags(listeners)),
             EnumSection(title="Network — established connections",
                         lines=_block(sec, "ESTAB")),
             EnumSection(title="Network — neighbors / DNS / hosts",
                         lines=_block(sec, "ARP", "DNS", "HOSTS")),
         ]
+
+    def _system_flags(self, sec) -> list:
+        flags = []
+        note = sudo_vuln(sec.get("SUDO", ""))
+        if note:
+            label = (sec.get("SUDO", "").splitlines() or ["sudo"])[0]
+            flags.append(EnumFlag(text=label, level="alert", reason=note))
+        kern = sec.get("KERNEL", "").split()
+        if len(kern) >= 3:
+            ver = kern[2]
+            mm = ".".join(ver.split(".")[:2])
+            flags.append(EnumFlag(
+                text=f"kernel {ver}", level="notice",
+                reason=f"check 'searchsploit linux kernel {mm}' for a local-root exploit"))
+        return flags
+
+    def _user_flags(self, sec) -> list:
+        flags = []
+        for line in sec.get("PASSWD", "").splitlines():
+            parts = line.split(":")
+            if len(parts) >= 3 and parts[2] == "0" and parts[0] != "root":
+                flags.append(EnumFlag(
+                    text=line, level="alert",
+                    reason=f"UID 0 account '{parts[0]}' other than root — "
+                           "backdoor or dangerous misconfig"))
+        return flags
+
+    def _listen_flags(self, listeners) -> list:
+        flags = []
+        for lis in listeners:
+            svc = guess_service(lis["port"])
+            proc = f" {lis['process']}" if lis.get("process") else ""
+            if lis["kind"] == "loopback" and svc in _INTERESTING_SVC:
+                flags.append(EnumFlag(
+                    text=f"{lis['proto']}/{lis['port']} {svc} (loopback){proc}",
+                    level="notice",
+                    reason=f"loopback-only {svc} — 'forward 127.0.0.1 {lis['port']}' "
+                           "to reach it"))
+            elif lis["kind"] == "any" and svc in {"mysql", "postgres", "mongodb",
+                                                  "mssql", "redis", "http"}:
+                flags.append(EnumFlag(
+                    text=f"{lis['proto']}/{lis['port']} {svc}{proc}",
+                    level="notice", reason=f"{svc} exposed on all interfaces"))
+        return flags
 
     # -- collect (persist the kernel anchor only) ------------------------------
     def collect(self, session):

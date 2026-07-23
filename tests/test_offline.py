@@ -275,6 +275,10 @@ def test_processes_collect_and_enumerate():
     assert len(secs) == 1 and secs[0].title == "Processes"
     body = "\n".join(secs[0].lines)
     assert "backdoor" in body and "kworker" not in body   # kthread filtered from dump
+    # triage: the /tmp root process and the secret both raise alert flags
+    flags = secs[0].flags
+    assert any(f.level == "alert" for f in flags)
+    assert any("backdoor" in f.text for f in flags)
 
 
 _CRON_OUT = (
@@ -298,7 +302,7 @@ _SVC_OUT = (
     "@@ENABLED@@\napache2.service enabled\n"
     "@@SYSV@@\n"
     "@@WRITABLE_UNIT@@\n/etc/systemd/system/evil.service\n"
-    "@@EXECSTART@@\nExecStart=/opt/app/run.sh\n@@END@@\n"
+    "@@EXECSTART@@\n/etc/systemd/system/app.service:ExecStart=/opt/app/run.sh\n@@END@@\n"
 )
 
 
@@ -312,6 +316,45 @@ def test_init_services_flags_writable_unit_and_execstart():
     running = next(s for s in InitServices().enumerate(sess)
                    if s.title == "Running services")
     assert "apache2" in "\n".join(running.lines)
+
+
+def test_triage_helpers():
+    from reap.modules._triage import interesting_bin, interesting_path, sudo_vuln
+    assert interesting_path("node /opt/app/server.js") == "/opt/app/server.js"
+    assert interesting_path("/usr/sbin/sshd -D") is None
+    assert interesting_bin("/usr/bin/socat")[0] == "tool"
+    assert interesting_bin("python3.11")[0] == "app"
+    assert interesting_bin("/usr/sbin/sshd") is None
+    assert "CVE-2021-3156" in (sudo_vuln("Sudo version 1.9.5p1") or "")   # < 1.9.5p2
+    assert "CVE-2019-14287" in (sudo_vuln("Sudo version 1.8.21p2") or "")
+    assert sudo_vuln("Sudo version 1.9.15p5") is None                     # patched
+
+
+def test_system_snapshot_flags_anomalies():
+    from reap.modules.primitives.system_snapshot import SystemSnapshot
+    out = ("@@KERNEL@@\nLinux victim 3.13.0-24-generic #1 x86_64\n"
+           "@@SUDO@@\nSudo version 1.8.21p2\n"
+           "@@PASSWD@@\nroot:x:0:0::/root:/bin/bash\n"
+           "backdoor:x:0:0::/root:/bin/bash\n@@END@@\n")
+    secs = {s.title: s for s in SystemSnapshot().enumerate(FakeSession({"uname -a": out}))}
+    assert any(f.level == "alert" and "CVE-2021-3156" in f.reason
+               for f in secs["System"].flags)                # vulnerable sudo
+    assert any("kernel" in f.text.lower() for f in secs["System"].flags)
+    assert any(f.level == "alert" and "backdoor" in f.reason
+               for f in secs["Users & accounts"].flags)      # extra UID 0 account
+
+
+def test_windows_enum_flags():
+    from reap.modules.plugins.windows_enum import (
+        WindowsEnum, _unquoted_service_path, _win_interesting)
+    assert _win_interesting("C:\\Users\\bob\\svc.exe") == "users"
+    assert _unquoted_service_path("C:\\Program Files\\Sub Dir\\x.exe -a")
+    flags = WindowsEnum()._svc_flags([
+        "Svc1|CORP\\svcacct|C:\\Users\\bob\\a.exe",       # binary under \users\
+        "Svc2|LocalSystem|C:\\Windows\\system32\\ok.exe",  # stock -> no flag
+    ])
+    assert any("users" in f.reason for f in flags)
+    assert not any("Svc2" in f.text for f in flags)
 
 
 def test_system_snapshot_persists_kernel_only():

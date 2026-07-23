@@ -16,26 +16,40 @@ from __future__ import annotations
 
 import re
 
-from ...models import Credential, EnumSection, Finding
+from ...models import Credential, EnumFlag, EnumSection, Finding
 from ...patterns import inline_cmdline_secret, mask, scan_line
 from ..base import Module, register
 
 _PS = "powershell -nop -c "
 
-# Structured (pipe-delimited) queries for collect() — reliable to parse.
+# Structured (pipe-delimited) queries — reliable to parse, and readable enough to
+# also drive the enumerate() display (single-quoted delimiter keeps -c "..." clean).
 _SVC_ROWS = _PS + '"Get-CimInstance Win32_Service | ForEach-Object { $_.Name + \'|\' + $_.StartName + \'|\' + $_.PathName }"'
 _PROC_ROWS = _PS + '"Get-CimInstance Win32_Process | ForEach-Object { [string]$_.ProcessId + \'|\' + $_.CommandLine }"'
-
-# Pretty (Format-Table) queries for enumerate() — for the operator's eyes.
-_SVC_TABLE = _PS + '"Get-CimInstance Win32_Service | Select-Object Name,State,StartMode,StartName,PathName | Format-Table -AutoSize | Out-String -Width 400"'
 _TASK_TABLE = _PS + '"Get-ScheduledTask | Where-Object {$_.State -ne \'Disabled\'} | Select-Object TaskPath,TaskName,State | Format-Table -AutoSize | Out-String -Width 300"'
-_PROC_TABLE = _PS + '"Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | Format-Table -AutoSize | Out-String -Width 500"'
 
 _CMD_PW = re.compile(r"(?i)(?:/|--?)(?:password|passwd|pass|pw)[:=\s]+(\S+)")
+
+# Directory fragments that make a service/process binary "out of place" on Windows.
+_WIN_INTERESTING = ("\\users\\", "\\temp\\", "\\tmp\\", "\\programdata\\",
+                    "\\inetpub\\", "\\appdata\\", "\\public\\", "\\perflogs\\")
+# Built-in service logon accounts — anything else is a custom/service/domain account.
+_STD_ACCOUNTS = {"localsystem", "localservice", "networkservice", "",
+                 "nt authority\\system", "nt authority\\localservice",
+                 "nt authority\\networkservice", "nt authority\\local service",
+                 "nt authority\\network service"}
 
 
 def _lines(text: str) -> list[str]:
     return [ln for ln in (text or "").splitlines() if ln.strip()]
+
+
+def _win_interesting(path: str):
+    low = (path or "").lower()
+    for frag in _WIN_INTERESTING:
+        if frag in low:
+            return frag.strip("\\")
+    return None
 
 
 def _unquoted_service_path(pathname: str) -> bool:
@@ -59,17 +73,66 @@ class WindowsEnum(Module):
 
     # -- enumerate (screen) ----------------------------------------------------
     def enumerate(self, session):
+        svc_rows = _lines(session.sh(_SVC_ROWS, timeout=60))
+        proc_rows = _lines(session.sh(_PROC_ROWS, timeout=60))
         return [
-            EnumSection(title="Services",
-                        lines=_lines(session.sh(_SVC_TABLE, timeout=60)),
-                        hint="unquoted paths with spaces + non-standard logon "
-                             "accounts are privesc leads ('run' flags unquoted paths)"),
-            EnumSection(title="Scheduled tasks",
+            EnumSection(
+                title="Services",
+                lines=[r.replace("|", "  ") for r in svc_rows] or ["(none)"],
+                hint="unquoted paths, non-standard logon accounts, and binaries "
+                     "outside Windows are flagged (unquoted are captured by 'run')",
+                flags=self._svc_flags(svc_rows)),
+            EnumSection(title="Scheduled tasks (enabled)",
                         lines=_lines(session.sh(_TASK_TABLE, timeout=60))),
-            EnumSection(title="Processes",
-                        lines=_lines(session.sh(_PROC_TABLE, timeout=60)),
-                        hint="secrets on command lines are captured by 'run'"),
+            EnumSection(
+                title="Processes",
+                lines=[r.replace("|", "  ", 1) for r in proc_rows] or ["(none)"],
+                hint="secrets on command lines and processes from user/temp dirs "
+                     "are flagged (secrets captured by 'run')",
+                flags=self._proc_flags(proc_rows)),
         ]
+
+    def _svc_flags(self, rows) -> list:
+        flags = []
+        for row in rows:
+            parts = row.split("|", 2)
+            if len(parts) < 3:
+                continue
+            name, account, path = (p.strip() for p in parts)
+            label = f"{name}: {path}"
+            if _unquoted_service_path(path):
+                flags.append(EnumFlag(text=label, level="alert",
+                                      reason="unquoted service path with a space — "
+                                             "plantable if an intermediate dir is writable"))
+            elif _win_interesting(path):
+                flags.append(EnumFlag(text=label, level="notice",
+                                      reason=f"binary under {_win_interesting(path)} "
+                                             "(outside Windows)"))
+            elif account.lower() not in _STD_ACCOUNTS:
+                flags.append(EnumFlag(text=f"{name} (runs as {account})", level="notice",
+                                      reason="non-standard service logon account"))
+            if len(flags) >= 40:
+                break
+        return flags
+
+    def _proc_flags(self, rows) -> list:
+        flags = []
+        for row in rows:
+            pid, _, cmdline = row.partition("|")
+            if not cmdline.strip():
+                continue
+            label = f"{pid.strip()} {cmdline.strip()}"[:140]
+            has_secret = any(f.credential for f in scan_line(cmdline, "cmdline")) or any(
+                inline_cmdline_secret(m.group(1)) for m in _CMD_PW.finditer(cmdline))
+            if has_secret:
+                flags.append(EnumFlag(text=label, level="alert",
+                                      reason="secret on the command line"))
+            elif _win_interesting(cmdline):
+                flags.append(EnumFlag(text=label, level="notice",
+                                      reason=f"runs from {_win_interesting(cmdline)}"))
+            if len(flags) >= 40:
+                break
+        return flags
 
     # -- collect (persist actionable subset) -----------------------------------
     def collect(self, session):

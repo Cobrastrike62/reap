@@ -169,11 +169,19 @@ Two things you want the moment you land on a box, without leaving reap.
 - **Windows** — services (with logon account + binary path), scheduled tasks,
   and processes with full command lines.
 
-It is for **your eyes** — nothing is written to the loot DB, so it never clutters
-`findings`.
+Every section leads with a **⚑ worth a look** block — the items reap judges *out
+of place*, each with a one-line reason — then the full raw listing (dimmed).
+`enum` ends with a **summary** of everything flagged across all sections, split
+into *worth acting on* (red) and *worth a look* (yellow), so you get a punch-list
+instead of a wall of text. The main heuristic: anything running from / referencing
+a path **outside the base system** (`/opt`, `/home`, `/srv`, `/usr/local`, `/tmp`
+…) — plus secrets on command lines, operator tools (`nc`, `socat`, `tmux` …),
+vulnerable `sudo`, extra UID-0 accounts, writable `$PATH` dirs, root-owned files
+you can write, and loopback-only services. It is for **your eyes** — nothing is
+written to the loot DB, so it never clutters `findings`.
 
 ```text
-reap> enum                 # full survey
+reap> enum                 # full survey (flags + raw + summary)
 reap> enum cron            # filter to the cron module
 reap> enum proc            # filter to processes
 reap> enum interesting     # just files & permissions

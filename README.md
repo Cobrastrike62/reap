@@ -161,7 +161,7 @@ Once a session is registered you have two ways to work the host by hand, both fr
 
 ### `enum` — enumeration, linpeas-style
 
-`enum` surveys the active session and prints it to the screen — the situational-awareness dump you'd otherwise shell out for. It covers:
+`enum` surveys the active session, **flags what looks out of place**, and prints the full picture to the screen. It covers:
 
 | Category | Collector | What you get |
 |---|---|---|
@@ -172,18 +172,33 @@ Once a session is registered you have two ways to work the host by hand, both fr
 | System & network | `system_snapshot` | kernel, distro, uptime, sudo version, `PATH`, logged-in/recent users, interfaces, routes, **listening sockets**, established connections, ARP, DNS, `/etc/hosts` |
 | Windows | `windows_enum` | services (with logon account + binary path), scheduled tasks, and processes with full command lines |
 
+Each section leads with a **⚑ worth a look** block — the items reap thinks are *out of place*, each with a one-line reason — followed by the full raw listing (dimmed, for completeness). At the end, `enum` prints a **summary** of everything flagged across every section, split into *worth acting on* (red) and *worth a look* (yellow), so you get a punch-list instead of a wall of text.
+
+The heuristic doing most of the work: anything running from — or referencing — a path **outside the base system** (`/opt`, `/home`, `/srv`, `/usr/local`, `/tmp` …). That's where the target app, an operator's custom daemon, or a dropped payload lives, while the distro's own files sit in `/usr`,`/bin`,`/sbin`,`/lib`. On top of that it flags secrets on command lines, operator/attacker tools (`nc`, `socat`, `tmux`, `tcpdump` …), vulnerable `sudo` versions, extra UID-0 accounts, writable `$PATH` directories, root-owned-but-you-can-write files, and loopback-only services worth forwarding.
+
 ```
 reap> enum
-──────────────────────────────── Processes ────────────────────────────────
-# look for creds on command lines and root-owned procs from writable paths (auto-captured by 'run')
-root           1 /sbin/init
-postgres     712 postgres: 13/main: writer process
-deploy      1841 node /opt/app/server.js --db-pass hunter2
-www-data    1990 /usr/sbin/apache2 -k start
-─────────────────────────────── systemd timers ────────────────────────────
-NEXT                         LEFT     UNIT                 ACTIVATES
-Tue 2026-07-21 15:39:00 CDT  14min    phpsessionclean.timer phpsessionclean.service
-...
+──────────────────────────── Processes ────────────────────────────
+⚑ worth a look:
+  ! www-data 1841 node /opt/app/server.js --db-pass hunter2  — secret on the command line
+  • postgres  712 postgres: 13/main: writer process           — postgres — interpreter/app
+  full listing:
+  root           1 /sbin/init
+  … (dimmed full ps output) …
+─────────────────────── Services — worth a look ───────────────────
+⚑ worth a look:
+  • nessusd.service: /opt/nessus/sbin/nessus-service  — service runs /opt/nessus (outside base system)
+─────────────────────────────── System ───────────────────────────
+⚑ worth a look:
+  ! Sudo version 1.8.21p2  — CVE-2021-3156 'Baron Samedit' heap overflow → root
+  • kernel 5.15.0-generic  — check 'searchsploit linux kernel 5.15' for a local-root exploit
+──────────────────── enum summary — 4 thing(s) stood out ──────────
+! worth acting on (2):
+   www-data 1841 node /opt/app/... (Processes) — secret on the command line
+   Sudo version 1.8.21p2 (System) — CVE-2021-3156 'Baron Samedit' → root
+• worth a look (2):
+   nessusd.service: /opt/nessus/... (Services) — runs /opt/nessus (outside base system)
+   kernel 5.15.0-generic (System) — check 'searchsploit linux kernel 5.15'
 ```
 
 Narrow it to one area by passing a filter that matches a collector name:

@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import re
 
-from ...models import EnumSection, Finding
+from ...models import EnumFlag, EnumSection, Finding
 from ...patterns import scan_line
 from .._probe import sections, writable_targets
+from .._triage import interesting_path
 from ..base import Module, register
 
 _UNIT_DIRS = ("/etc/systemd/system /run/systemd/system "
@@ -29,7 +30,7 @@ echo '@@RUNNING@@'; systemctl list-units --type=service --state=running --no-leg
 echo '@@ENABLED@@'; systemctl list-unit-files --type=service --state=enabled --no-legend --no-pager 2>/dev/null | head -n 200
 echo '@@SYSV@@'; service --status-all 2>/dev/null; ls /etc/init.d 2>/dev/null
 echo '@@WRITABLE_UNIT@@'; find """ + _UNIT_DIRS + r""" -maxdepth 2 -writable -type f 2>/dev/null | head -n 60
-echo '@@EXECSTART@@'; grep -rhoE '^[[:space:]]*ExecStart=.*' """ + _UNIT_DIRS + r""" 2>/dev/null | head -n 400
+echo '@@EXECSTART@@'; grep -rHE '^[[:space:]]*ExecStart=' """ + _UNIT_DIRS + r""" 2>/dev/null | head -n 400
 echo '@@END@@'
 """).strip()
 
@@ -50,11 +51,16 @@ class InitServices(Module):
     # -- enumerate (screen) ----------------------------------------------------
     def enumerate(self, session):
         sec = self._survey(session)
-        out = [
+        out = []
+        flags = self._flags(sec)
+        if flags:
+            out.append(EnumSection(
+                title="Services — worth a look", flags=flags,
+                hint="custom/writable units and ExecStart binaries outside the base "
+                     "system (writable ones are captured by 'run')"))
+        out += [
             EnumSection(title="Running services",
-                        lines=sec.get("RUNNING", "").splitlines(),
-                        hint="writable unit files / ExecStart binaries are captured "
-                             "by 'run' (systemd privesc)"),
+                        lines=sec.get("RUNNING", "").splitlines()),
             EnumSection(title="Enabled-at-boot services",
                         lines=sec.get("ENABLED", "").splitlines()),
         ]
@@ -62,6 +68,31 @@ class InitServices(Module):
             out.append(EnumSection(title="SysV / init.d",
                                    lines=sec["SYSV"].splitlines()))
         return out
+
+    def _flags(self, sec) -> list:
+        flags = []
+        for path in sec.get("WRITABLE_UNIT", "").splitlines():
+            path = path.strip()
+            if path:
+                flags.append(EnumFlag(
+                    text=path, level="alert",
+                    reason="writable unit file — edit ExecStart to run as its User= "
+                           "(usually root)"))
+        for line in sec.get("EXECSTART", "").splitlines():
+            unit_path, _, rest = line.partition(":")
+            m = _EXECSTART.search(rest or line)
+            if not m:
+                continue
+            binp = m.group(1)
+            ip = interesting_path(binp) or interesting_path(rest)
+            if ip:
+                unit = unit_path.rsplit("/", 1)[-1] if "/" in unit_path else unit_path
+                flags.append(EnumFlag(
+                    text=f"{unit}: {binp}", level="notice",
+                    reason=f"service runs {ip} (outside base system)"))
+            if len(flags) >= 30:
+                break
+        return flags
 
     # -- collect (persist actionable subset) -----------------------------------
     def collect(self, session):
