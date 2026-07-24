@@ -22,10 +22,22 @@ reap installs from source. On Kali:
 ```bash
 git clone https://github.com/Cobrastrike62/reap.git ~/reap
 cd ~/reap
-./install.sh --full          # creates .venv and installs reap with all optional backends
+./install.sh --full          # local .venv + all optional backends
 source .venv/bin/activate
 reap
 ```
+
+**Prefer a global command** with no venv to activate? Install via pipx — it puts an editable `reap` on your `PATH`:
+
+```bash
+sudo apt install -y pipx && pipx ensurepath   # once; then open a new shell
+```
+
+```bash
+cd ~/reap && bash install.sh --pipx --full    # global editable reap + all backends
+```
+
+(`--pipx` and `--full` are independent — `--pipx` makes it global, `--full` chooses the backends. Add `--trusted-host` behind a TLS-intercepting proxy.)
 
 `install.sh` flags (combine freely):
 
