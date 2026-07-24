@@ -62,13 +62,15 @@ reap is built in layers, each depending only on the one below it:
 
 ```
 Console        register / enum / run / correlate / forward / shell / report
-Correlation    credential-to-service reuse (incl. pass-the-hash) + capability findings
+Correlation    credential reuse (incl. pass-the-hash) + capability findings + DB credential-catalog dump
 Modules        fingerprint + collection primitives + per-runtime plugins
 Loot store     SQLite: hosts, services, credentials, findings
 Transport      SSH / WinRM / webshell / pwncat handoff  (one exec contract)
 ```
 
 Modules never see the transport. They run over a single `Session.exec()` contract, so the same collection works whether the session is SSH, WinRM, a webshell, or a handed-off pwncat shell.
+
+Correlation also **closes the DB loop**: when a discovered credential is confirmed against a MySQL/Postgres/MSSQL/Mongo service, reap reuses that proven login to read the database's own credential catalog (`mysql.user`, `pg_shadow`, `sys.sql_logins`, mongo `system.users`), storing every account hash — tagged with its hashcat mode — as new loot for offline cracking. It reads only the auth catalog, not application data, and you can disable it with `REAP_NO_DBDUMP=1`.
 
 ## Attaching to a foothold
 
@@ -288,7 +290,7 @@ It's **line-based, with no PTY**: send-a-command, read-the-output. Programs that
 | `enum [filter]` | linpeas-style survey (processes/cron/services/network/kernel); screen-only |
 | `ports` | every local listening socket (ss + netstat + `/proc/net` union — found even with no ss/netstat); flags loopback-only |
 | `!<cmd>` / `shell <cmd>` / `interact` | run commands on the target — one-off, or a line-based remote shell (`cd` persists) |
-| `correlate` | re-test credentials against services, including pass-the-hash |
+| `correlate` | re-test credentials against services (incl. pass-the-hash); on a confirmed DB login, dump its credential catalog to loot |
 | `forward <rhost> <rport> [lport]` | tunnel a target-internal service to localhost over the SSH session |
 | `forwards` / `unforward <lport>` | list / close port forwards |
 | `creds` | credentials and their verified reuse |

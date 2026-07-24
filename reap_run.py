@@ -82,6 +82,9 @@ def main():
             con.print(f"  [bold red]REUSE[/] {r['source']} -> {r['user']}@{r['host']}:{r['port']} ({r['proto']})")
         elif r.get("type") == "capability":
             con.print(f"  [bold magenta]CAPABILITY[/] {r['capability']}: {r['action']}")
+        elif r.get("type") == "db_dump":
+            con.print(f"  [bold yellow]DUMPED[/] {r['count']} hashes from "
+                      f"{r['proto']}@{r['host']} (as {r['user']})")
 
     rep = Reporter(store)
     rep.render_creds(con)

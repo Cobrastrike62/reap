@@ -277,6 +277,11 @@ class ReapConsole(cmd.Cmd):
                 shown = True
                 self.console.print(f"  [bold magenta]CAPABILITY[/] {r['capability']}: "
                                    f"{r['action']}")
+            elif r.get("type") == "db_dump":
+                shown = True
+                self.console.print(f"  [bold yellow]DUMPED[/] {r['count']} account "
+                                   f"hashes from {r['proto']}@{r['host']} (as "
+                                   f"{r['user']}) → creds  [dim]export creds / hashcat[/]")
         if not shown:
             self.console.print("  [dim]no confirmed reuse or capabilities yet[/]")
 

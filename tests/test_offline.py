@@ -171,6 +171,38 @@ def test_candidate_usernames_priority(tmp_path):
     assert users.index("webadmin") < users.index("root")  # real users before defaults
 
 
+# --- DB credential-catalog dump ---------------------------------------------
+def test_classify_db_hash():
+    from reap.correlation import CorrelationEngine as C
+    assert C._classify_db_hash("mysql", "*" + "A" * 40) == ("mysql_native", "300")
+    assert C._classify_db_hash("mysql", "$A$005$xyz")[0] == "mysql_caching_sha2"
+    assert C._classify_db_hash("postgres", "md5" + "a" * 32)[1] == "12"
+    assert C._classify_db_hash("mssql", "0x0200ABCD")[1] == "1731"
+
+
+def test_db_dump_ingests_hashes_and_flags(tmp_path):
+    from reap.correlation import CorrelationEngine
+    store = LootStore(str(tmp_path / "t.db"))
+    hid = store.get_or_create_host("10.0.0.9")
+    eng = CorrelationEngine(store)
+    # stand in for a live mysql.user read (no DB needed)
+    eng._dump_mysql = lambda *a: [
+        ("dbadmin", "*" + "A" * 40,
+         {"kind": "hash", "proto": "mysql", "hash_type": "mysql_native",
+          "hashcat_mode": "300", "via": "db_dump"}),
+        ("svc_web", "*" + "B" * 40, {"kind": "hash", "proto": "mysql"}),
+    ]
+    res = eng._db_dump("mysql", "10.0.0.9", 3306, "root", "pw",
+                       {"host_id": hid, "port": 3306})
+    assert res and res[0]["type"] == "db_dump" and res[0]["count"] == 2
+    secrets = {c["secret"] for c in store.get_credentials()}
+    assert ("*" + "A" * 40) in secrets and ("*" + "B" * 40) in secrets
+    dbadmin = next(c for c in store.get_credentials() if c["username"] == "dbadmin")
+    assert dbadmin["kind"] == "hash"
+    assert dbadmin["metadata"].get("hashcat_mode") == "300"     # feeds a crack handoff
+    assert any("DB credential dump" in f["title"] for f in store.get_findings())
+
+
 # --- webshell exit-code handling (Tier-1 bug #4) ----------------------------
 def test_webshell_rc_parse_and_missing_sentinel(monkeypatch):
     from reap.transport import webshell as ws

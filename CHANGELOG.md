@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.10 — close the DB loop: dump the credential catalog on a confirmed login
+
+- **Correlation now loots the database it just got into.** When a discovered
+  credential is confirmed against a MySQL/Postgres/MSSQL/Mongo service, reap reuses
+  that proven login to read the DB's own credential catalog — `mysql.user`,
+  `pg_shadow`, `sys.sql_logins`, mongo `system.users` — and stores every account
+  hash as new loot. That turns "I have DB access" into "here are N more hashes to
+  crack", and the harvested usernames enrich later correlation.
+- **Hashcat-ready.** Each dumped hash is tagged with its type and hashcat mode
+  (mysql_native → 300, postgres md5 → 12, MSSQL 2012 → 1731, mongo SCRAM →
+  24100/24200, …), so `export creds` hands them straight to cracking. MariaDB's
+  dual-column `mysql.user` layout is handled (takes the non-empty of
+  `authentication_string`/`Password`); empty socket-auth rows are skipped.
+- **Stays in scope.** It reads only the auth catalog, never application tables, and
+  only after a login reap already confirmed — loot collection, not exploitation.
+  Bounded to 500 rows, best-effort (skips silently without the DB driver or the
+  privilege to read the catalog), and disabled with `REAP_NO_DBDUMP=1` /
+  `no_dump=True`. Validated end-to-end against a live MariaDB. Tests: 36 → 38.
+
 ## v1.9 — `enum` triage goes deep on privesc
 
 More reach for the "stood out" summary, aimed at real escalation paths:

@@ -259,7 +259,7 @@ pwncat-vl for those.
 | `ports` | every local listening socket, unioned from ss + netstat + `/proc/net` (found even with no ss/netstat); flags loopback-only |
 | `!<cmd>` / `shell <cmd>` | run one command on the target (virtual `cd` persists across commands) |
 | `interact` | drop into a line-based remote shell on the target (`exit`/Ctrl-D to leave) |
-| `correlate` | re-test discovered creds against discovered services |
+| `correlate` | re-test discovered creds against discovered services; on a confirmed DB login, dump its credential catalog (mysql.user / pg_shadow / sql_logins / mongo) to loot |
 | `forward <rhost> <rport> [lport]` | tunnel a target-internal service to `127.0.0.1` via the active SSH session (like `ssh -L`) |
 | `forwards` / `unforward <lport>` | list / tear down active port forwards |
 | `creds` | credentials and their verified reuse |
@@ -326,6 +326,12 @@ against the forwarded/internal services automatically.
   it's fast. For webshell, prefer `reap_run.py` (or just let `run` finish).
 - **Editing reap needs no reinstall** — it's an editable install, so new modules/plugins
   load on the next `run`.
+- **DB credential-catalog dump**: when `correlate` confirms a DB login, reap reuses
+  it to read the database's own account hashes (`mysql.user`, `pg_shadow`,
+  `sys.sql_logins`, mongo `system.users`) into loot — tagged with the hashcat mode,
+  so `export creds` hands them straight to cracking. Needs the DB backend installed
+  (`install.sh --db`/`--full`) and enough privilege to read the catalog. It reads
+  only the auth catalog, never app tables; disable with `REAP_NO_DBDUMP=1`.
 - **Heavy enum wrappers** (LinPEAS/WinPEAS/SharpHound) only fire if you opt in with
   `export REAP_HEAVY=1` and the tools are on disk. The built-in **`enum`** command is
   the no-drop alternative — it surveys the box natively (no binary to upload or hide),
