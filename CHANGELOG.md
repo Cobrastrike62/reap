@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.11 — evidence, coverage, saved surveys and a portable agent
+
+- Preserve distinct socket binds, families, TCP/UDP, processes and PIDs. Decode IPv6 procfs addresses in the target's byte order and expose source status. Exclude UDP from TCP correlation and forwarding.
+- Join cron/service execution references to owner/group/mode, effective file/parent access, run-as accounts, confidence and next checks. Fix custom passwd-file classification and use the target HOME for SSH-key location hints.
+- Track missing tools, permission failures, incomplete responses, timeouts and reached caps. Remove the misleading stock-machine conclusion from empty surveys.
+- Add `enum --save`, `--diff`, `--brief` and `show` for complete finding/lead/snapshot evidence. Keep snapshots separate from ranked findings and include them in JSON. Preserve full finding details in Markdown.
+- Add opt-in `ports --probe` and `enum --probe` for bounded target-side HTTP, banner and TLS metadata on discovered TCP endpoints, including alternate-port web services.
+- Add a standalone Python 3.9+ foreground agent with bind/connect-back modes, required tokens, TLS certificate pinning, serialized requests, timeouts and output caps. Agent sessions use the normal enum/run/shell interface.
+- Separate password lists from hashes, tokens, keys and capabilities. Add validated per-mode `export hashes` files, a manifest and skipped-record reasons. Correct MongoDB SCRAM collection to use serverKey and Hashcat's username encoding/separators.
+- Add Linux/Windows Python CI and an Alpine/BusyBox job, with socket, HTTP/TLS, agent, coverage, snapshot, permission and export integration fixtures.
+- Expand README and usage examples, including agent transfer, saved surveys, service probing and `bash install.sh --pipx --full`.
+
 ## v1.10 — close the DB loop: dump the credential catalog on a confirmed login
 
 - **Correlation now loots the database it just got into.** When a discovered

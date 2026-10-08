@@ -43,7 +43,7 @@ class LootStore:
     # Columns added after v1 — ALTER older engagement DBs in place so an
     # existing store keeps opening.
     _EXPECTED_COLUMNS = {
-        "services": {"remote_host": "TEXT"},
+        "services": {"remote_host": "TEXT", "transport": "TEXT", "bind_address": "TEXT", "address_family": "TEXT"},
         "findings": {"note": "TEXT"},
     }
 
@@ -108,18 +108,21 @@ class LootStore:
     # -- services --------------------------------------------------------------
     def add_service(self, host_id: int, proto: str, port: Optional[int] = None,
                     product: Optional[str] = None, notes: Optional[str] = None,
-                    remote_host: Optional[str] = None) -> int:
+                    remote_host: Optional[str] = None, transport=None,
+                    bind_address=None, address_family=None) -> int:
         row = self.conn.execute(
             "SELECT id FROM services WHERE host_id=? AND proto=? "
-            "AND IFNULL(port,-1)=IFNULL(?,-1) AND IFNULL(remote_host,'')=IFNULL(?,'')",
-            (host_id, proto, port, remote_host),
+            "AND IFNULL(port,-1)=IFNULL(?,-1) AND IFNULL(remote_host,'')=IFNULL(?,'') "
+            "AND IFNULL(transport,'')=IFNULL(?,'') AND IFNULL(bind_address,'')=IFNULL(?,'') "
+            "AND IFNULL(address_family,'')=IFNULL(?,'')",
+            (host_id, proto, port, remote_host, transport, bind_address, address_family),
         ).fetchone()
         if row:
             return row["id"]
         cur = self.conn.execute(
-            "INSERT INTO services (host_id, port, proto, product, notes, remote_host) "
-            "VALUES (?,?,?,?,?,?)",
-            (host_id, port, proto, product, notes, remote_host),
+            "INSERT INTO services (host_id, port, proto, product, notes, remote_host, transport, bind_address, address_family) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (host_id, port, proto, product, notes, remote_host, transport, bind_address, address_family),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -195,7 +198,8 @@ class LootStore:
             if remote:
                 self.get_or_create_host(remote)
             self.add_service(host_id, s.proto, s.port, s.product, s.notes,
-                             remote_host=remote)
+                             remote_host=remote, transport=s.transport,
+                             bind_address=s.bind_address, address_family=s.address_family)
         if finding.credential:
             self.add_credential(finding.credential, host_id)
         return self.add_finding(
@@ -247,3 +251,30 @@ class LootStore:
 
     def close(self) -> None:
         self.conn.close()
+
+    def save_snapshot(self, host_id, session_id, payload, filter_name=''):
+        cur = self.conn.execute(
+            'INSERT INTO enum_snapshots (host_id, session_id, created, filter_name, payload) VALUES (?,?,?,?,?)',
+            (host_id, session_id, self._now(), filter_name, json.dumps(payload)))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def latest_snapshot(self, host_id, filter_name=''):
+        row = self.conn.execute('SELECT * FROM enum_snapshots WHERE host_id=? AND filter_name=? ORDER BY id DESC LIMIT 1',
+                                (host_id, filter_name)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result['payload'] = json.loads(result['payload'])
+        return result
+
+    def get_snapshot(self, ident):
+        row = self.conn.execute('SELECT * FROM enum_snapshots WHERE id=?', (ident,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result['payload'] = json.loads(result['payload'])
+        return result
+
+    def get_snapshots(self):
+        return [self.get_snapshot(row[0]) for row in self.conn.execute('SELECT id FROM enum_snapshots ORDER BY id').fetchall()]

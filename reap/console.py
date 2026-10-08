@@ -15,10 +15,12 @@ from .fingerprint import fingerprint
 from .modules import all_modules, select
 from .modules.base import Module
 from .netinfo import guess_service, probe_listeners
+from .survey import SurveySession, snapshot_diff, snapshot_sections
+from .serviceinfo import identify_services
 from .patterns import proto_for_port
 from .reporter import Reporter
 from .store import LootStore
-from .transport import ADAPTERS, NotSupported, RawShellSession
+from .transport import ADAPTERS, AgentSession, NotSupported, RawShellSession
 
 # Protocols worth auto-forwarding / registering for correlation when found on loopback.
 _FWD_CORR_PROTOS = {"ssh", "winrm", "smb", "mysql", "postgres", "mongodb",
@@ -55,6 +57,8 @@ class ReapConsole(cmd.Cmd):
         self.forwards: dict = {}   # local_port -> {fwd, sid, rhost, rport}
         self._cwd: dict = {}       # sid -> virtual working directory (see _target_exec)
         self.active = None
+        self._last_enum = {}
+        self._enum_items = {}
 
     # -- banner ----------------------------------------------------------------
     def preloop(self):
@@ -91,7 +95,7 @@ class ReapConsole(cmd.Cmd):
 
     # -- register --------------------------------------------------------------
     def do_register(self, line):
-        """register <ssh|winrm|handoff|webshell|bind|listen> <host|url|port> [user] [password] [--key PATH] [--key-pass P] [--port N] [--ssl] [--param NAME] [--method GET|POST] [--shell sh|cmd]
+        """register <ssh|winrm|handoff|webshell|bind|listen|agent|agent-listen> <host|url|port> [user] [password] [--key PATH] [--key-pass P] [--port N] [--ssl] [--param NAME] [--method GET|POST] [--shell sh|cmd]
 
         bind <host> <port>   — connect out to a bind shell
         listen <port>        — catch a reverse shell (fire your payload after this)"""
@@ -104,6 +108,20 @@ class ReapConsole(cmd.Cmd):
             self.console.print(self.do_register.__doc__)
             return
         adapter, rest = args[0].lower(), args[1:]
+        if adapter in ("agent", "agent-listen"):
+            self._register_agent(adapter, rest)
+            return
+        value_flags = {"--key", "--key-pass", "--port", "--param", "--method", "--shell"}
+        if any(tok in value_flags and (index + 1 == len(rest) or rest[index + 1].startswith("--"))
+               for index, tok in enumerate(rest)):
+            self.console.print("[red]missing option value[/]")
+            return
+        if "--port" in rest:
+            try:
+                int(rest[rest.index("--port") + 1])
+            except ValueError:
+                self.console.print("[red]port must be an integer[/]")
+                return
         flags, pos = {}, []
         i = 0
         while i < len(rest):
@@ -243,9 +261,11 @@ class ReapConsole(cmd.Cmd):
         mods = select(ctx)
         self.console.print(f"[cyan]running {len(mods)} matched modules[/] on {sid}")
         total = 0
+        survey = SurveySession(sess, linux=ctx.os == "linux")
         for m in mods:
+            survey.module = m.name
             try:
-                findings = m.collect(sess)
+                findings = m.collect(survey)
             except Exception as exc:
                 self.console.print(f"  [red]{m.name} errored: {exc}[/]")
                 continue
@@ -254,6 +274,7 @@ class ReapConsole(cmd.Cmd):
             total += len(findings)
             style = "green" if findings else "dim"
             self.console.print(f"  [{style}]{m.name}: {len(findings)} findings[/]")
+        self._print_coverage(survey.checks)
         self.console.print(f"[green]collected {total} findings[/]")
         self._autoforward(sid)
         self.do_correlate("")
@@ -291,7 +312,7 @@ class ReapConsole(cmd.Cmd):
         the correlation engine tests discovered creds against it."""
         hid = self.store.get_or_create_host("127.0.0.1")
         self.store.add_service(hid, proto, port=local_port, product=label,
-                               notes=f"forward {label}")
+                               notes=f"forward {label}", transport="tcp", bind_address="127.0.0.1", address_family="ipv4")
 
     def do_forward(self, line):
         """forward <remote_host> <remote_port> [local_port] — tunnel a target-internal
@@ -395,147 +416,284 @@ class ReapConsole(cmd.Cmd):
         for svc in services:
             proto, port = svc.get("proto"), svc.get("port")
             notes = svc.get("notes") or ""
-            if proto not in _FWD_CORR_PROTOS or not port:
+            if proto not in _FWD_CORR_PROTOS or not port or svc.get("transport") == "udp":
                 continue
-            if not (notes.startswith("127.") or "::1" in notes):
-                continue  # only loopback-bound listeners
-            if any(f["rport"] == port and f["rhost"] in ("127.0.0.1", "localhost")
+            address = svc.get("bind_address")
+            if address:
+                import ipaddress
+                try:
+                    if not ipaddress.ip_address(address).is_loopback:
+                        continue
+                except ValueError:
+                    continue
+            elif not (notes.startswith("127.") or notes.startswith(("[::1]:", "::1:"))):
+                continue
+            rhost = svc.get("bind_address") or ("::1" if "::1" in notes else "127.0.0.1")
+            if any(f["sid"] == sid and f["rport"] == port and f["rhost"] == rhost
                    for f in self.forwards.values()):
                 continue  # already forwarded
             try:
-                fwd = sess.open_forward("127.0.0.1", port, 0)
+                fwd = sess.open_forward(rhost, port, 0)
             except NotSupported:
                 return  # this session can't forward — stop trying
             except Exception:
                 continue
             self.forwards[fwd.local_port] = {"fwd": fwd, "sid": sid,
-                                             "rhost": "127.0.0.1", "rport": port}
+                                             "rhost": rhost, "rport": port}
             self._register_forward_service(
                 fwd.local_port, proto, f"auto -> {sess.host} loopback {proto}/{port}")
             self.console.print(f"  [cyan]auto-forward[/] 127.0.0.1:{fwd.local_port} → "
                                f"{sess.host} loopback {proto}/{port}")
 
-    # -- enum (situational awareness) ------------------------------------------
+    # -- enumeration -----------------------------------------------------------
     def do_enum(self, line):
-        """enum [filter] — linpeas-style survey of the active session: processes,
-        cron jobs, services, network, kernel. Screen-only situational awareness; the
-        actionable subset (secrets on command lines, writable service/cron targets)
-        is captured as findings by 'run'. Optional [filter] matches module names,
-        e.g. 'enum cron' or 'enum proc'."""
+        """enum [filter] [--save] [--diff] [--probe] [--brief]
+        Survey the active session, show evidence and coverage. --save persists a
+        snapshot; --diff compares with the last saved snapshot of the same scope.
+        --probe identifies discovered TCP services (Linux, target Python required).
+        --brief hides raw listings. show E1 expands a lead from the latest enum."""
+        from .models import EnumSection
+        try:
+            args = shlex.split(line)
+        except ValueError as exc:
+            self.console.print(str(exc), markup=False)
+            return
+        options = {a for a in args if a.startswith("--")}
+        if options - {"--save", "--diff", "--probe", "--brief"}:
+            self.console.print(self.do_enum.__doc__, markup=False)
+            return
+        filt = " ".join(a for a in args if not a.startswith("--")).lower()
         sid = self._resolve("")
         if not sid:
             return
-        sess = self.sessions[sid]
         ctx = self.contexts.get(sid)
         if ctx is None:
             self._fingerprint(sid)
             ctx = self.contexts.get(sid)
         if ctx is None:
             return
-        filt = line.strip().lower()
-        mods = [m for m in select(ctx)
-                if type(m).enumerate is not Module.enumerate
+        session = SurveySession(self.sessions[sid], linux=ctx.os == "linux")
+        if not ctx.fingerprint_complete:
+            session.checks.append({"name": "context fingerprint", "status": "partial",
+                                   "detail": "Module selection may be incomplete because the fingerprint was truncated."})
+        mods = [m for m in select(ctx) if type(m).enumerate is not Module.enumerate
                 and (not filt or filt in m.name.lower())]
         if not mods:
-            self.console.print("[dim]no enumeration modules match "
-                               f"{('/' + filt + '/ ') if filt else ''}this context[/]")
+            self.console.print("No enumeration modules match this scope.", markup=False)
             return
-        all_flags = []   # (section_title, EnumFlag) rolled up into the summary
-        for m in mods:
+        collected = []
+        for module in mods:
+            session.module = module.name
+            self.console.print("Checking " + module.name + " ...", style="dim", markup=False)
             try:
-                secs = m.enumerate(sess)
+                collected.extend(module.enumerate(session))
             except Exception as exc:
-                self.console.print(f"  [red]{m.name} enum errored: {exc}[/]")
-                continue
-            for sec in secs:
-                self.console.rule(f"[bold cyan]{sec.title}[/]", style="cyan")
-                if sec.hint:
-                    self.console.print(f"[dim]# {sec.hint}[/]")
-                uniq, seen = [], set()
-                for fl in sec.flags:
-                    key = (fl.level, fl.text, fl.reason)
-                    if key not in seen:
-                        seen.add(key)
-                        uniq.append(fl)
-                if uniq:
-                    self.console.print("[bold]⚑ worth a look:[/]")
-                    for fl in uniq:
-                        self._print_flag(fl)
-                        all_flags.append((sec.title, fl))
-                    if sec.lines:
-                        self.console.print("[dim]  full listing:[/]")
-                if sec.lines:
-                    for ln in sec.lines:
-                        self.console.print(ln, markup=False, highlight=False, style="dim")
-                elif not sec.flags:
-                    self.console.print("[dim](none / not available)[/]")
+                session.checks.append({"module": module.name, "name": "enumeration",
+                                       "status": "partial", "detail": str(exc)})
+        if "--probe" in options:
+            session.module = "service identification"
+            if ctx.os == "linux":
+                try:
+                    collected.append(identify_services(session, probe_listeners(session)))
+                except Exception as exc:
+                    session.checks.append({"name": "service identification", "status": "partial", "detail": str(exc)})
+            else:
+                collected.append(EnumSection("Service identification", checks=[
+                    {"name": "service identification", "status": "tool unavailable",
+                     "detail": "Target service identification currently requires Linux and Python."}]))
+        all_flags = []
+        self._enum_items = {}
+        for section in collected:
+            self.console.rule(section.title, style="cyan")
+            if section.hint:
+                self.console.print(section.hint, markup=False, style="dim")
+            seen = set()
+            for flag in section.flags:
+                key = (flag.text, flag.reason)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ident = "E" + str(len(self._enum_items) + 1)
+                self._enum_items[ident] = flag
+                self.console.print(ident, style="bold cyan")
+                self._print_flag(flag)
+                all_flags.append((section.title, flag))
+            if "--brief" not in options:
+                for text in section.lines:
+                    self.console.print(text, markup=False, highlight=False, style="dim")
+        checks = session.checks + [check for section in collected for check in section.checks]
+        self._print_coverage(checks)
         self._enum_summary(all_flags)
+        incomplete = sum(c["status"] != "completed" for c in checks)
+        self.console.print("%s check(s) incomplete or unavailable. Review coverage before assuming absence." % incomplete,
+                           style="yellow" if incomplete else "dim", markup=False)
+        scope = filt + (" +probe" if "--probe" in options else "")
+        payload = {"sections": snapshot_sections(collected), "checks": checks,
+                   "filter": scope, "session": sid, "os": ctx.os}
+        self._last_enum[sid] = payload
+        hid = self.store.get_or_create_host(session.host, os=ctx.os)
+        previous = self.store.latest_snapshot(hid, scope)
+        if "--diff" in options:
+            if previous is None:
+                self.console.print("No saved baseline for this host and scope. Use enum --save.", markup=False)
+            else:
+                changes = snapshot_diff(previous["payload"], payload)
+                self.console.print("Compared with snapshot %s: %s added, %s removed." %
+                                   (previous["id"], len(changes["added"]), len(changes["removed"])), markup=False)
+                for label in ("added", "removed"):
+                    for title, kind, fact in changes[label]:
+                        self.console.print("%s | %s | %s: %s" % (label, title, kind, fact), markup=False)
+        if "--save" in options:
+            ident = self.store.save_snapshot(hid, sid, payload, scope)
+            self.console.print("Saved snapshot %s. Read it with show snapshot %s." % (ident, ident), markup=False)
 
-    def _print_flag(self, fl):
-        from rich.markup import escape
-        mark, color = ("!", "bold red") if fl.level == "alert" else ("•", "yellow")
-        text = fl.text if len(fl.text) <= 120 else fl.text[:117] + "..."
-        self.console.print(f"  [{color}]{mark} {escape(text)}[/]  "
-                           f"[dim]— {escape(fl.reason)}[/]")
+    def _print_flag(self, flag):
+        self.console.print(flag.text, style="bold red" if flag.level == "alert" else "yellow",
+                           markup=False, highlight=False)
+        self.console.print("  %s [confidence: %s]" % (flag.reason, flag.confidence), markup=False)
+        for line in flag.evidence:
+            self.console.print("  " + line, markup=False, highlight=False)
+        if flag.next_check:
+            self.console.print("  Next check: " + flag.next_check, markup=False)
+
+    def _print_coverage(self, checks):
+        from rich.table import Table
+        table = Table(title="Check coverage")
+        for name in ("Module", "Check", "Status", "Scope / diagnostic"):
+            table.add_column(name)
+        unique = {}
+        for check in checks:
+            key = (check.get("module", ""), check["name"], check["status"], check.get("detail", ""))
+            unique[key] = check
+        for check in unique.values():
+            table.add_row(check.get("module", ""), check["name"], check["status"], check.get("detail", ""))
+        self.console.print(table)
 
     def _enum_summary(self, all_flags):
-        from rich.markup import escape
+        self.console.rule("Enum summary", style="cyan")
         if not all_flags:
-            self.console.rule("[bold cyan]enum summary[/]", style="cyan")
-            self.console.print("[dim]nothing stood out — the box looks close to stock. "
-                               "Still worth a manual skim of the sections above.[/]\n")
-            return
-        alerts = [(t, f) for t, f in all_flags if f.level == "alert"]
-        notices = [(t, f) for t, f in all_flags if f.level != "alert"]
-        self.console.rule(f"[bold cyan]enum summary — {len(all_flags)} thing(s) stood "
-                          f"out[/]", style="cyan")
-        for label, color, mark, group in (
-                ("worth acting on", "bold red", "!", alerts),
-                ("worth a look", "yellow", "•", notices)):
-            if not group:
-                continue
-            self.console.print(f"[{color}]{mark} {label} ({len(group)}):[/]")
-            for sect, fl in group:
-                self.console.print(f"   [{color}]{escape(fl.text[:100])}[/] "
-                                   f"[dim]({escape(sect)}) — {escape(fl.reason)}[/]")
-        self.console.print()
+            self.console.print("No flagged leads in the returned evidence. This does not rule out missed findings.", markup=False)
+        else:
+            self.console.print("%s lead(s) stood out. Evidence and next checks appear above; show E1 expands a lead." % len(all_flags),
+                               markup=False)
+            for level, label, style in (("alert", "Alerts to investigate", "bold red"),
+                                        ("notice", "Other leads", "yellow")):
+                group = [(index, title, flag) for index, (title, flag) in enumerate(all_flags, 1)
+                         if (flag.level == "alert") == (level == "alert")]
+                if not group:
+                    continue
+                self.console.print(label, style=style, markup=False)
+                for index, title, flag in group:
+                    self.console.print("E%s | %s | %s: %s [confidence: %s]" %
+                                       (index, title, flag.text, flag.reason, flag.confidence),
+                                       style=style, markup=False, highlight=False)
 
     def do_survey(self, line):
         """survey — alias for enum"""
         self.do_enum(line)
 
     def do_ports(self, line):
-        """ports [session] — list ALL local listening sockets on the target, unioned
-        from ss + netstat + /proc/net so they're found even on a box with no ss/netstat
-        installed. Loopback-only ports need a 'forward' to reach; 'run' auto-forwards
-        the correlate-able ones (DB/SSH/etc.)."""
-        sid = self._resolve(line)
+        """ports [session] [--probe] — local TCP/UDP sockets with source coverage.
+        --probe sends bounded requests to discovered TCP endpoints from the Linux target."""
+        from rich.table import Table
+        args = shlex.split(line)
+        if any(a.startswith("--") and a != "--probe" for a in args):
+            self.console.print(self.do_ports.__doc__, markup=False)
+            return
+        sid = self._resolve(" ".join(a for a in args if a != "--probe"))
         if not sid:
             return
-        from rich.table import Table
+        if self._is_windows(sid):
+            self.console.print("Socket inventory currently uses Linux sources. Use enum for Windows inventory.", markup=False)
+            return
         try:
             listeners = probe_listeners(self.sessions[sid])
         except Exception as exc:
-            self.console.print(f"[red]port probe failed: {exc}[/]")
+            self.console.print("Port discovery failed: " + str(exc), markup=False, style="red")
             return
-        if not listeners:
-            self.console.print("[yellow]no listening sockets found[/] "
-                               "[dim](checked ss, netstat, and /proc/net)[/]")
-            return
-        table = Table(title=f"Listening sockets — {sid}")
-        for col in ("L4", "Port", "Bind", "Service", "Process"):
+        table = Table(title="Local sockets: " + sid)
+        for col in ("L4", "Family", "Port", "Bind", "Service guess", "Process / PID"):
             table.add_column(col)
-        for lis in listeners:
-            loop = lis["kind"] == "loopback"
-            bind = lis["addr"].rsplit(":", 1)[0] + ("  (loopback)" if loop else "")
-            port = f"[yellow]{lis['port']}[/]" if loop else str(lis["port"])
-            table.add_row(lis["proto"], port, bind, guess_service(lis["port"]),
-                          lis["process"] or "-")
+        for row in listeners:
+            table.add_row(row["proto"], row["family"], str(row["port"]), row["ip"],
+                          guess_service(row["port"]), "%s / %s" % (row["process"] or "-", row["pid"] or "-"))
         self.console.print(table)
-        loopn = sum(1 for lis in listeners if lis["kind"] == "loopback")
-        if loopn:
-            self.console.print(f"[dim]{loopn} loopback-only — reach with "
-                               "'forward 127.0.0.1 <port>' (run auto-forwards DB/SSH/etc.)[/]")
+        self._print_coverage(listeners.checks)
+        if not listeners:
+            self.console.print("No sockets observed. Review failed sources before assuming none exist.", markup=False)
+        for row in listeners:
+            if row["kind"] == "loopback" and row["proto"] == "tcp":
+                self.console.print("Reach %s using: forward %s %s" % (row["addr"], row["ip"], row["port"]), markup=False, style="dim")
+        if "--probe" in args:
+            if self._is_windows(sid):
+                self.console.print("Target service identification currently requires Linux and Python.", markup=False)
+                return
+            try:
+                section = identify_services(self.sessions[sid], listeners)
+                for text in section.lines:
+                    self.console.print(text, markup=False)
+                self._print_coverage(section.checks)
+            except Exception as exc:
+                self.console.print("Service identification failed: " + str(exc), markup=False)
+
+    def do_show(self, line):
+        """show <finding_id|E1> or show snapshot <id> — full untruncated evidence."""
+        import json
+        parts = line.split()
+        if len(parts) == 1 and parts[0].upper() in self._enum_items:
+            self._print_flag(self._enum_items[parts[0].upper()])
+        elif len(parts) == 2 and parts[0] == "snapshot" and parts[1].isdigit():
+            snapshot = self.store.get_snapshot(int(parts[1]))
+            self.console.print(json.dumps(snapshot, indent=2, ensure_ascii=False) if snapshot else "Snapshot not found.",
+                               markup=False, highlight=False)
+        elif len(parts) == 1 and parts[0].isdigit():
+            finding = next((f for f in self.store.get_findings() if f["id"] == int(parts[0])), None)
+            self.console.print(json.dumps(finding, indent=2, ensure_ascii=False) if finding else "Finding not found.",
+                               markup=False, highlight=False)
+        else:
+            self.console.print(self.do_show.__doc__, markup=False)
+
+    def do_agent(self, line):
+        """agent prepare <new-directory> — create a portable agent and unique TLS/token bundle.
+        Connect back: register agent-listen <port> --bundle <directory> [--bind 0.0.0.0]
+        Bind agent: register agent <host> <port> --bundle <directory>"""
+        from .agent import prepare_bundle
+        try:
+            args = shlex.split(line)
+            if len(args) != 2 or args[0] != "prepare":
+                self.console.print(self.do_agent.__doc__, markup=False)
+                return
+            destination = prepare_bundle(args[1])
+            self.console.print("Created " + str(destination), markup=False)
+            self.console.print("Copy reap_agent.py, token.txt and fingerprint.txt to the lab target for connect-back mode. "
+                               "Keep key.pem on the operator machine. See README for bind mode.", markup=False)
+        except Exception as exc:
+            self.console.print("Agent preparation failed: " + str(exc), markup=False, style="red")
+
+    def _register_agent(self, adapter, args):
+        import argparse
+        parser = argparse.ArgumentParser(prog="register " + adapter, exit_on_error=False)
+        parser.add_argument("endpoint")
+        parser.add_argument("port", nargs="?", type=int)
+        parser.add_argument("--bundle", required=True)
+        parser.add_argument("--bind", default="0.0.0.0")
+        try:
+            options = parser.parse_args(args)
+            if adapter == "agent-listen":
+                port = int(options.endpoint)
+                self.console.print("Waiting up to 60 seconds for an authenticated agent on %s:%s" % (options.bind, port), markup=False)
+                session = AgentSession(options.bind, port, options.bundle, mode="listen")
+            else:
+                if options.port is None:
+                    raise ValueError("register agent requires host and port")
+                session = AgentSession(options.endpoint, options.port, options.bundle)
+            self.sessions[session.session_id] = session
+            self.active = session.session_id
+            self.store.get_or_create_host(session.host)
+            self.console.print("Registered " + session.session_id, markup=False, style="green")
+            self._fingerprint(session.session_id)
+        except (Exception, KeyboardInterrupt, SystemExit) as exc:
+            self.console.print("Agent registration failed: " + str(exc), markup=False, style="red")
 
     # -- target shell (breakout) -----------------------------------------------
     def do_shell(self, line):
@@ -680,21 +838,23 @@ class ReapConsole(cmd.Cmd):
                            + (" [dim](secrets redacted)[/]" if redact else ""))
 
     def do_export(self, line):
-        """export <creds|targets|json> [path] — machine-readable exports for other tools"""
-        parts = line.split()
+        """export <creds|hashes|targets|json> [path] — machine-readable exports for other tools"""
+        parts = shlex.split(line)
         if not parts:
-            self.console.print("usage: export <creds|targets|json> [path]")
+            self.console.print("usage: export <creds|hashes|targets|json> [path]")
             return
         what, arg = parts[0].lower(), (parts[1] if len(parts) > 1 else None)
         rep = Reporter(self.store)
         if what == "creds":
             self.console.print(f"[green]wrote[/] {', '.join(rep.export_creds_txt(arg or 'reap'))}")
+        elif what == "hashes":
+            self.console.print("Wrote " + ", ".join(rep.export_hashes(arg or "reap-hashes")), markup=False)
         elif what == "targets":
             self.console.print(f"[green]wrote[/] {rep.export_targets_txt(arg or 'reap-targets.txt')}")
         elif what == "json":
             self.console.print(f"[green]wrote[/] {rep.export_json(arg or 'reap-report.json')}")
         else:
-            self.console.print("usage: export <creds|targets|json> [path]")
+            self.console.print("usage: export <creds|hashes|targets|json> [path]")
 
     def do_search(self, line):
         """search <regex> — case-insensitive search over findings (title/detail/note)"""
@@ -757,7 +917,6 @@ class ReapConsole(cmd.Cmd):
         except Exception as exc:
             self.console.print(f"[red]could not parse {path}: {exc}[/]")
             return
-        from .patterns import proto_for_port
         added = 0
         for host_el in root.findall("host"):
             status = host_el.find("status")
@@ -780,7 +939,8 @@ class ReapConsole(cmd.Cmd):
                 name = (svc_el.get("name") if svc_el is not None else "") or ""
                 product = svc_el.get("product") if svc_el is not None else None
                 proto = self._nmap_proto(name) or proto_for_port(portnum)
-                self.store.add_service(hid, proto, port=portnum, product=product)
+                self.store.add_service(hid, proto, port=portnum, product=product,
+                                       transport=p.get("protocol"), address_family="ipv6" if ":" in addr else "ipv4")
                 added += 1
         self.console.print(f"[green]imported {added} open services[/] from {path}")
 
@@ -842,6 +1002,14 @@ class ReapConsole(cmd.Cmd):
             except Exception:
                 pass
         self.forwards.clear()
+        for session in self.sessions.values():
+            close = getattr(session, "close", None)
+            if close:
+                try:
+                    close()
+                except Exception:
+                    pass
+        self.store.close()
         self.console.print("bye")
         return True
 
@@ -850,8 +1018,7 @@ class ReapConsole(cmd.Cmd):
         return self.do_exit(line)
 
     def do_EOF(self, line):
-        print()
-        return True
+        return self.do_exit(line)
 
 
 def main(argv=None):

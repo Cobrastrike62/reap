@@ -43,6 +43,7 @@ def _probe_script(fullfs: bool) -> str:
     return "\n".join([
         "echo '@@UID@@'; id -u",
         "echo '@@MYGROUPS@@'; id -Gn 2>/dev/null",
+        "echo '@@HOME@@'; printf '%s\\n' \"$HOME\"",
         # writable $PATH entries (skip $HOME- and mount-rooted — not privesc)
         "echo '@@PATHW@@'",
         f'{non_root} {{ IFS=:; for d in $PATH; do [ -d "$d" ] && [ -w "$d" ] || continue; '
@@ -123,7 +124,7 @@ class InterestingFiles(Module):
         keys = sec.get("SSHKEYS", "").splitlines()
         worldw = sec.get("WORLDW", "").splitlines()
         own = sec.get("OWN", "").splitlines()
-        home = (os.environ.get("HOME") or "").rstrip("/")
+        home = sec.get('HOME', '').strip().rstrip('/')
 
         def rootw_flags():
             out = []

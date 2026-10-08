@@ -41,7 +41,8 @@ class ListeningServices(Module):
             detail = f"{lis['proto']} {lis['addr']}"
             if lis["kind"] != "any":
                 detail += f" [{lis['kind']}]"
-            svc = Service(proto=app, port=port, product=product, notes=lis["addr"])
+            svc = Service(proto=app, port=port, product=product, notes=lis["addr"],
+                          transport=lis['proto'], bind_address=lis.get('ip'), address_family=lis.get('family'))
             findings.append(Finding(
                 type="info", title=f"Listening {app}/{port}", severity="low",
                 detail=detail, service=svc, source_module=self.name))

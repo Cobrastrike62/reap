@@ -84,6 +84,7 @@ class SystemSnapshot(Module):
                         lines=_block(sec, "IFACES", "ROUTES")),
             EnumSection(title="Network — listening sockets",
                         lines=format_listeners(listeners),
+                        checks=getattr(listeners, 'checks', []),
                         hint="unioned from ss + netstat + /proc/net (found even with "
                              "no ss/netstat); loopback-only ones are auto-forwarded by 'run'",
                         flags=self._listen_flags(listeners)),
@@ -98,7 +99,9 @@ class SystemSnapshot(Module):
         note = sudo_vuln(sec.get("SUDO", ""))
         if note:
             label = (sec.get("SUDO", "").splitlines() or ["sudo"])[0]
-            flags.append(EnumFlag(text=label, level="alert", reason=note))
+            flags.append(EnumFlag(text=label, level="alert", reason=note,
+                                  confidence="inferred",
+                                  next_check="Check distro package advisories and backported fixes; a version alone does not establish vulnerability."))
         kern = sec.get("KERNEL", "").split()
         if len(kern) >= 3:
             ver = kern[2]
@@ -149,8 +152,9 @@ class SystemSnapshot(Module):
                 flags.append(EnumFlag(
                     text=f"{lis['proto']}/{lis['port']} {svc} (loopback){proc}",
                     level="notice",
-                    reason=f"loopback-only {svc} — 'forward 127.0.0.1 {lis['port']}' "
-                           "to reach it"))
+                    reason=f"loopback-only {svc} — 'forward {lis.get('ip', '127.0.0.1')} {lis['port']}' "
+                           "to reach it", confidence='inferred',
+                    next_check=f"forward {lis.get('ip', '127.0.0.1')} {lis['port']}"))
             elif lis["kind"] == "any" and svc in {"mysql", "postgres", "mongodb",
                                                   "mssql", "redis", "http"}:
                 flags.append(EnumFlag(

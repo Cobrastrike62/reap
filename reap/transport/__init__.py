@@ -6,6 +6,7 @@ The console uses ADAPTERS to build a session from a register command.
 from __future__ import annotations
 
 from .base import NotSupported, Result, Session
+from .agent import AgentSession
 from .meterpreter import MeterpreterSession
 from .pwncat import PwncatHandoffSession
 from .rawshell import RawShellSession
@@ -19,6 +20,8 @@ except Exception:  # pragma: no cover
     WinRMSession = None  # type: ignore[assignment]
 
 ADAPTERS = {
+    "agent": AgentSession,
+    "agent-listen": AgentSession,
     "ssh": SSHSession,
     "winrm": WinRMSession,
     "handoff": PwncatHandoffSession,
@@ -39,6 +42,6 @@ __all__ = [
     "MeterpreterSession",
     "WebShellSession",
     "RawShellSession",
+    "AgentSession",
     "ADAPTERS",
 ]
-

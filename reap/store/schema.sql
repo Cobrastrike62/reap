@@ -42,3 +42,12 @@ CREATE TABLE IF NOT EXISTS findings (
     created TEXT,
     note TEXT              -- operator annotation (set via the console 'note' command)
 );
+
+CREATE TABLE IF NOT EXISTS enum_snapshots (
+    id INTEGER PRIMARY KEY,
+    host_id INTEGER REFERENCES hosts(id),
+    session_id TEXT,
+    created TEXT,
+    filter_name TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL
+);

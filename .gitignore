@@ -17,6 +17,8 @@ reap-targets.txt
 reap-users.txt
 reap-pass.txt
 reap-userpass.txt
+reap-hashes-m*.txt
+reap-hashes-manifest.json
 requirements-pwncat.lock
 
 # kept locally, not published

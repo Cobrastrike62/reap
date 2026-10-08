@@ -466,7 +466,7 @@ def test_probe_listeners_merges_ss_process_onto_proc_port():
 def test_triage_groups_and_critical_files():
     from reap.modules._triage import DANGEROUS_GROUPS, critical_file
     assert DANGEROUS_GROUPS["docker"][0] == "alert"
-    assert "instant root" in (critical_file("/etc/shadow") or "")
+    assert "security-critical" in (critical_file("/etc/shadow") or "")
     assert critical_file("/etc/sudoers.d/mine")
     assert critical_file("/opt/app/config.yml") is None
 
@@ -486,7 +486,7 @@ def test_interesting_files_ownership_exploitable():
     sess = FakeSession({"@@ROOTGRPW@@": out})
     titles = " ".join(f.title for f in InterestingFiles().collect(sess))
     detail = " ".join(f.detail for f in InterestingFiles().collect(sess))
-    assert "instant root" in detail                              # /etc/passwd critical
+    assert "security-critical" in detail                         # /etc/passwd critical
     assert "group-writable via devs: /opt/app/config.yml" in titles
     assert "/etc/other" not in titles                            # group 'root' not mine
     assert "in a dir you can write: /home/kali/deploy/root_script.sh" in titles

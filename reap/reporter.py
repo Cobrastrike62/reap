@@ -31,11 +31,11 @@ class Reporter:
     def render_findings(self, console) -> None:
         from rich.table import Table
         table = Table(title="Ranked findings", expand=True)
-        for col in ("Sev", "Type", "Title", "Host", "Module", "Detail"):
+        for col in ("ID", "Sev", "Type", "Title", "Host", "Module", "Detail (show ID for full)"):
             table.add_column(col)
         for f in self.findings():
             sev = f.get("severity") or "low"
-            table.add_row(f"[{_SEV_STYLE.get(sev, '')}]{sev}[/]", f["type"],
+            table.add_row(str(f['id']), f"[{_SEV_STYLE.get(sev, '')}]{sev}[/]", f["type"],
                           f.get("title", ""), f.get("host") or "-",
                           f.get("source_module") or "-", (f.get("detail") or "")[:80])
         console.print(table)
@@ -72,7 +72,7 @@ class Reporter:
                  "|---|---|---|---|---|---|"]
         for f in self.findings():
             note = f.get("note")
-            detail = (f.get("detail") or "")[:160]
+            detail = f.get("detail") or ""
             if note:
                 detail = f"{detail}  _(note: {note})_"
             lines.append(f"| {f.get('severity', '')} | {f['type']} | "
@@ -112,6 +112,7 @@ class Reporter:
             "credentials": self.credentials(),
             "findings": self.findings(),
             "timeline": self.timeline(),
+            "enum_snapshots": self.store.get_snapshots(),
         }
         Path(path).write_text(json.dumps(data, indent=2, default=str),
                               encoding="utf-8")
@@ -119,16 +120,19 @@ class Reporter:
 
     def export_creds_txt(self, prefix: str = "reap") -> list[str]:
         """Write hydra/netexec-ready lists: users, passwords, and user:pass.
-        SSH-key blobs are excluded (they aren't spray material)."""
+        Only password credentials enter password/pair lists; hashes, tokens,
+        capabilities and SSH keys are excluded."""
         users, secrets_, pairs = [], [], []
         seen_u, seen_s, seen_p = set(), set(), set()
         for c in self.credentials():
             u = (c.get("username") or "").strip()
-            if u and u not in seen_u:
+            if u and '\n' not in u and '\r' not in u and u not in seen_u:
                 seen_u.add(u); users.append(u)
-            if c["kind"] in ("ssh_key", "capability"):
+            if c["kind"] != "password":
                 continue
             s = c.get("secret") or ""
+            if '\n' in s or '\r' in s or '\n' in u or '\r' in u:
+                continue
             if s and s not in seen_s:
                 seen_s.add(s); secrets_.append(s)
             if u and s:
@@ -143,6 +147,35 @@ class Reporter:
                                   encoding="utf-8")
             written.append(name)
         return written
+
+    def export_hashes(self, prefix: str = 'reap-hashes') -> list[str]:
+        from .hashes import format_hash
+        groups, records, skipped = {}, [], []
+        for credential in self.credentials():
+            if credential['kind'] != 'hash':
+                continue
+            record = {'credential_id': credential['id'], 'username': credential.get('username'),
+                      'source': credential.get('source')}
+            try:
+                mode, value, description = format_hash(credential)
+                groups.setdefault(mode, [])
+                if value not in groups[mode]:
+                    groups[mode].append(value)
+                records.append(dict(record, mode=mode, format=description, path=f'{prefix}-m{mode}.txt'))
+            except ValueError as exc:
+                skipped.append(dict(record, reason=str(exc)))
+        paths = []
+        for mode, values in sorted(groups.items(), key=lambda item: int(item[0])):
+            path = Path(f'{prefix}-m{mode}.txt')
+            path.write_text('\n'.join(values) + '\n', encoding='utf-8')
+            path.chmod(0o600)
+            paths.append(str(path))
+        manifest = Path(f'{prefix}-manifest.json')
+        manifest.write_text(json.dumps({'records': records, 'skipped': skipped,
+                                       'reference': 'https://hashcat.net/wiki/doku.php?id=example_hashes'}, indent=2), encoding='utf-8')
+        manifest.chmod(0o600)
+        paths.append(str(manifest))
+        return paths
 
     def export_targets_txt(self, path: str = "reap-targets.txt") -> str:
         """host:port lines (preferring a service's remote_host) + a proto view."""

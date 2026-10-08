@@ -61,6 +61,9 @@ class Service:
     product: Optional[str] = None
     notes: Optional[str] = None
     host: Optional[str] = None      # remote host (e.g. from a conn string); None = foothold
+    transport: Optional[str] = None  # tcp / udp, separate from application protocol
+    bind_address: Optional[str] = None
+    address_family: Optional[str] = None
 
 
 @dataclass
@@ -89,6 +92,9 @@ class EnumFlag:
     text: str                       # the item (a process / cron / service / port line)
     reason: str                     # why it's worth a look
     level: str = "notice"           # "alert" (red, likely important) | "notice" (yellow)
+    confidence: str = "inferred"    # observed / inferred / verified
+    evidence: list[str] = field(default_factory=list)
+    next_check: str = ""
 
 
 @dataclass
@@ -96,7 +102,7 @@ class EnumSection:
     """A block of situational-awareness output for the console ``enum`` view
     (linpeas-style: processes, services, crons, network, kernel).
 
-    Screen-only and high-volume by nature — it is *not* persisted. A module still
+    Screen-only by default; enum --save persists a snapshot. A module still
     routes the actionable subset (secrets in a command line, a writable service /
     cron target) into the loot store as ranked ``Finding`` objects via ``collect``;
     ``enumerate`` is only the human-readable dump.
@@ -109,3 +115,4 @@ class EnumSection:
     lines: list[str] = field(default_factory=list)
     hint: str = ""                  # one line on why it matters / what to check
     flags: list["EnumFlag"] = field(default_factory=list)
+    checks: list[dict] = field(default_factory=list)

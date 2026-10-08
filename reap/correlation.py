@@ -17,6 +17,7 @@ probed once then abandoned, and the constructor exposes ``no_spray``,
 """
 from __future__ import annotations
 
+import base64
 import os
 import socket
 import time
@@ -141,6 +142,8 @@ class CorrelationEngine:
 
     @staticmethod
     def _compatible(cred: dict, svc: dict) -> bool:
+        if svc.get('transport') == 'udp':
+            return False
         proto = svc["proto"]
         if cred["kind"] == "ssh_key":
             return proto == "ssh"
@@ -540,12 +543,14 @@ class CorrelationEngine:
                 if not (uname and scram):
                     continue
                 sha256 = "SCRAM-SHA-256" in creds
-                need = ("iterationCount", "salt", "storedKey")
+                need = ("iterationCount", "salt", "serverKey")
                 if not all(k in scram for k in need):
                     continue
-                # hashcat mongodb-scram: $mongodb-scram$<0|1>$user$iter$b64salt$b64storedKey
-                h = (f"$mongodb-scram${'1' if sha256 else '0'}${uname}$"
-                     f"{scram['iterationCount']}${scram['salt']}${scram['storedKey']}")
+                # Hashcat 24100/24200 require serverKey, star separators and a
+                # base64 username, not Mongo's storedKey.
+                encoded_user = base64.b64encode(str(uname).encode('utf-8')).decode('ascii')
+                h = (f"$mongodb-scram$*{'1' if sha256 else '0'}*{encoded_user}*"
+                     f"{scram['iterationCount']}*{scram['salt']}*{scram['serverKey']}")
                 out.append((uname, h, {
                     "kind": "hash", "proto": "mongodb", "via": "db_dump",
                     "hash_type": f"mongodb_scram_sha{'256' if sha256 else '1'}",

@@ -30,7 +30,7 @@ echo '@@RUNNING@@'; systemctl list-units --type=service --state=running --no-leg
 echo '@@ENABLED@@'; systemctl list-unit-files --type=service --state=enabled --no-legend --no-pager 2>/dev/null | head -n 200
 echo '@@SYSV@@'; service --status-all 2>/dev/null; ls /etc/init.d 2>/dev/null
 echo '@@WRITABLE_UNIT@@'; find """ + _UNIT_DIRS + r""" -maxdepth 2 -writable -type f 2>/dev/null | head -n 60
-echo '@@EXECSTART@@'; grep -rHE '^[[:space:]]*ExecStart=' """ + _UNIT_DIRS + r""" 2>/dev/null | head -n 400
+echo '@@EXECSTART@@'; grep -rHE '^[[:space:]]*(ExecStart|User|Group)=' """ + _UNIT_DIRS + r""" 2>/dev/null | head -n 400
 echo '@@END@@'
 """).strip()
 
