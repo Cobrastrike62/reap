@@ -63,6 +63,8 @@ reap
 
 For a local venv, use `bash install.sh --full` and activate `.venv` instead. `--full` chooses extras; `--pipx` supplies the global command.
 
+The portable agent is included in the core package. Its operator-side certificate dependency, `cryptography`, is installed automatically from `pyproject.toml`; the target agent needs only Python 3.9+ and its standard library. After bringing an older checkout up to this version, rerun the installer so newly declared dependencies are installed. Editable source changes take effect immediately, but dependency changes still need installation. Existing loot databases gain the new socket fields and snapshot table automatically when Reap opens them.
+
 ## Quickstart
 
 ```

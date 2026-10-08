@@ -9,6 +9,8 @@ usage() {
   cat <<'EOF'
 reap installer
 
+Core installation includes the portable agent and its TLS certificate dependency.
+
   ./install.sh [flags]
 
 Flags (combine freely):
@@ -77,7 +79,8 @@ if [[ "$USE_PIPX" == "1" ]]; then
   echo
   echo "[+] reap installed globally (pipx, editable)."
   echo "    run:     reap"
-  echo "    update:  refresh the ~/reap source (git pull / rsync) — code is live, no reinstall"
+  echo "    update:  refresh the source, then rerun bash install.sh --pipx (add your extras flags)"
+  echo "             editable code changes are live; rerun the installer for new dependencies"
 else
   SPEC="."
   [[ -n "$EXTRA" ]] && SPEC=".[$EXTRA]"

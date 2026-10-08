@@ -11,6 +11,7 @@
 - Separate password lists from hashes, tokens, keys and capabilities. Add validated per-mode `export hashes` files, a manifest and skipped-record reasons. Correct MongoDB SCRAM collection to use serverKey and Hashcat's username encoding/separators.
 - Add Linux/Windows Python CI and an Alpine/BusyBox job, with socket, HTTP/TLS, agent, coverage, snapshot, permission and export integration fixtures.
 - Expand README and usage examples, including agent transfer, saved surveys, service probing and `bash install.sh --pipx --full`.
+- Clarify that the agent's TLS dependency is installed with the core package and that existing editable installs must rerun the installer when dependencies change.
 
 ## v1.10 — close the DB loop: dump the credential catalog on a confirmed login
 
