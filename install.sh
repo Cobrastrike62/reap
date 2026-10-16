@@ -2,7 +2,7 @@
 # reap installer — run on any Kali (or Linux) instance after cloning/copying the
 # project. Two install modes:
 #   * default  : an isolated project .venv + the `reap` command (activate to use)
-#   * --pipx   : a global, editable `reap` command via pipx (no activation needed)
+#   * --pipx   : an editable `reap` on the current user's PATH (no activation needed)
 set -euo pipefail
 
 usage() {
@@ -11,10 +11,10 @@ reap installer
 
 Core installation includes the portable agent and its TLS certificate dependency.
 
-  ./install.sh [flags]
+  bash install.sh [flags]
 
-Flags (combine freely):
-  --pipx           global, editable `reap` command via pipx (no venv activation)
+Flags (choose one backend flag: --db, --win or --full; the last one wins):
+  --pipx           editable `reap` on the current user's PATH (no venv activation)
   --db             + DB login backends (mysql / postgres / mongo / mssql)
   --win            + Windows/AD backends (SMB + pass-the-hash + GPP decrypt)
   --full           + all optional backends (db + win)
@@ -23,10 +23,10 @@ Flags (combine freely):
   -h, --help       this help
 
 Examples:
-  ./install.sh                              local .venv, core only
-  ./install.sh --full                       local .venv + all extras
-  ./install.sh --pipx --full                global editable command + all extras
-  ./install.sh --pipx --full --trusted-host global + extras behind a corporate proxy
+  bash install.sh                              local .venv, core only
+  bash install.sh --full                       local .venv + all extras
+  bash install.sh --pipx --full                current-user command + all extras
+  bash install.sh --pipx --full --trusted-host command + extras behind a corporate proxy
 EOF
 }
 
@@ -69,7 +69,7 @@ if [[ "$USE_PIPX" == "1" ]]; then
   fi
   PIPX_PIPARGS=()
   [[ -n "$PIP_ARGS" ]] && PIPX_PIPARGS=(--pip-args "$PIP_ARGS")
-  echo "[*] Installing reap globally via pipx (editable)"
+  echo "[*] Installing reap on the current user's PATH via pipx (editable)"
   pipx install --force --editable "${PIPX_PIPARGS[@]}" "$HERE"
   if [[ -n "$EXTRA_PKGS" ]]; then
     echo "[*] Injecting '$EXTRA' extras into reap: $EXTRA_PKGS"
@@ -77,7 +77,7 @@ if [[ "$USE_PIPX" == "1" ]]; then
     pipx inject reap $EXTRA_PKGS "${PIPX_PIPARGS[@]}"
   fi
   echo
-  echo "[+] reap installed globally (pipx, editable)."
+  echo "[+] reap installed for the current user (pipx, editable)."
   echo "    run:     reap"
   echo "    update:  refresh the source, then rerun bash install.sh --pipx (add your extras flags)"
   echo "             editable code changes are live; rerun the installer for new dependencies"

@@ -14,13 +14,19 @@ against discovered services, and gives you a ranked findings list + report.
 
 ## 1. Install (once per Kali)
 
-Get the project onto the box (`git clone`, or copy the folder over via scp/rsync/USB), then:
+Reap requires Python 3.9 or newer. On Kali, install Git and Python's venv support:
+
+```bash
+sudo apt install -y git python3-venv
+```
+
+Get the project onto the box using `git clone` or the source archive instructions below, then:
 
 ```bash
 cd ~/reap                    # the project folder
-./install.sh --full          # local .venv + all optional backends
-# or, for a global command that needs no activation:
-./install.sh --pipx --full   # editable `reap` on your PATH (needs pipx; see below)
+bash install.sh --full       # local .venv + all optional backends
+# or, for a command that needs no activation:
+bash install.sh --pipx --full   # editable reap on your user's PATH (needs pipx)
 ```
 
 For the `.venv` install, use it from each new terminal with:
@@ -30,10 +36,97 @@ source ~/reap/.venv/bin/activate && reap
 ```
 
 Notes:
+
 - `--pipx` needs pipx first: `sudo apt install -y pipx && pipx ensurepath` (then a new shell).
+- Choose one backend flag: `--db`, `--win` or `--full`. Use `--full` for both sets; if you pass several backend flags, the last one wins.
 - Behind a TLS-intercepting proxy, add `--trusted-host`.
-- `./install.sh --help` lists all flags (`--db`, `--win`, `--full`, `--pipx`, `--with-pwncat`, `--trusted-host`).
+- `bash install.sh --help` lists all flags (`--db`, `--win`, `--full`, `--pipx`, `--with-pwncat`, `--trusted-host`).
 - Prefer not to activate a `.venv`? `alias reap='~/reap/.venv/bin/reap'` in `~/.bashrc`.
+
+Both installation modes are editable. Keep the source folder at its installed path; moving or deleting it can break Reap. If you move the source, rerun the pipx installer from the new location. A local `.venv` moved with the source must be recreated: move it out of the way and rerun `bash install.sh --full`, since its launchers contain absolute paths. `--pipx` exposes the command for the current Linux user, and `--full` installs the optional backends. Neither flag installs Reap for every account on Kali.
+
+### Transfer Reap to another Kali instance
+
+Choose a source archive when you only need to install and run Reap. Choose a Git bundle when you also want committed history, including commits that have not reached GitHub. A bundle transfers source history without contacting GitHub. Both methods still need dependency downloads during installation.
+
+#### Install from a source archive
+
+From the source repository on Windows or Linux:
+
+```bash
+git status --short
+git archive --format=tar.gz --prefix=reap/ --output=../reap-1.11.0.tar.gz HEAD
+```
+
+`HEAD` means the latest local commit. The archive excludes `.git`, uncommitted edits and untracked files. Review the status output and commit the source changes you intend to distribute first. `git ls-files` shows the tracked files that will be packaged; ignored files that were already committed remain tracked.
+
+Transfer the archive by scp, USB or a shared folder. On a fresh Kali machine, after installing pipx as described above:
+
+```bash
+tar -xzf /path/to/reap-1.11.0.tar.gz -C "$HOME"
+cd ~/reap
+bash install.sh --pipx --full
+reap --help
+```
+
+This creates `~/reap` as the permanent source directory. An archive has no Git metadata, so `git pull` is unavailable there. To update it later, transfer a newer archive, review local edits and apply the new source after a backup, then rerun the installer. Use a separate extraction directory for an existing installation so you can compare files before replacing them.
+
+#### Carry Git history with a bundle
+
+From the source repository:
+
+```bash
+git bundle create ../reap.bundle main
+git bundle verify ../reap.bundle
+```
+
+This includes `main` and its committed history. It does not include other branch tips, uncommitted edits, ignored engagement files or the source repository's configuration and hooks. Copy the bundle to Kali, then clone it into a directory that does not already exist:
+
+```bash
+git clone -b main /path/to/reap.bundle ~/reap
+cd ~/reap
+bash install.sh --pipx --full
+reap --help
+```
+
+The clone's `origin` initially points to the bundle file. To use GitHub for future updates when it is accessible:
+
+```bash
+git remote set-url origin https://github.com/Cobrastrike62/reap.git
+```
+
+You can also copy a standalone checkout including its hidden `.git` directory when you want its local Git setup. Do not use that approach for a linked Git worktree: its `.git` file can point back to the original machine. A bundle avoids that dependency. Git history can contain files deleted from the current source, so review the history before sharing a bundle outside your own machines.
+
+#### Update an existing Kali or Kali WSL installation
+
+First back up the existing checkout, including local edits and engagement data. For example, this makes a private backup on the same Kali instance:
+
+```bash
+backup_dir="$HOME/reap-backups/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$backup_dir"
+chmod 700 "$HOME/reap-backups" "$backup_dir"
+cp -a "$HOME/reap" "$backup_dir/reap"
+```
+
+The backup can contain credentials and agent private keys; keep it private. Preserve existing loot databases and generated kits separately from source updates. Do not replace `.git` or delete untracked files to force an update through.
+
+For a GitHub checkout with no conflicting local changes:
+
+```bash
+cd ~/reap
+git status --short
+git pull --ff-only
+bash install.sh --pipx --full
+reap --help
+```
+
+For local-venv installations, use `bash install.sh --full` and `source ~/reap/.venv/bin/activate` instead. Source edits load when Reap restarts; new dependencies require the installer. Existing loot databases are migrated when Reap opens them. Reap's relative default database path, `reap.db`, is resolved from the directory where you start the command, so use `reap --db /path/to/engagement.db` to reopen the intended store.
+
+If an older alias, shell function or activated venv masks a pipx command, inspect it with `type -a reap`. Deactivate the old venv and adjust the alias if you intend to use pipx. Do not transfer `.venv`, pipx environments, caches or build output between machines; reinstall for the destination's Python version. A fully offline install also needs dependency wheels compatible with that Python version and architecture. The source archive and Git bundle do not contain those wheels.
+
+These steps install the operator application. The target-side portable agent uses only its transferred kit and Python 3.9+; it does not need this repository, pipx or Reap's optional backends.
+
+References: [Git source archives](https://git-scm.com/docs/git-archive), [Git bundles](https://git-scm.com/docs/git-bundle), [pipx installation options](https://pipx.pypa.io/stable/reference/cli.html).
 
 ---
 
@@ -371,8 +464,8 @@ against the forwarded/internal services automatically.
   ```
 - **Webshell channel is slow for broad sweeps** (PHP per-request time limits). Over SSH
   it's fast. For webshell, prefer `reap_run.py` (or just let `run` finish).
-- **Editing reap needs no reinstall** — it's an editable install, so new modules/plugins
-  load on the next `run`.
+- **Editing Reap's source needs no reinstall**: restart Reap to load the changed code.
+  Rerun the installer when dependencies change, and keep its source directory in place.
 - **DB credential-catalog dump**: when `correlate` confirms a DB login, reap reuses
   it to read the database's own account hashes (`mysql.user`, `pg_shadow`,
   `sys.sql_logins`, mongo `system.users`) into loot — tagged with the hashcat mode,

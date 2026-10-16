@@ -12,6 +12,7 @@
 - Add Linux/Windows Python CI and an Alpine/BusyBox job, with socket, HTTP/TLS, agent, coverage, snapshot, permission and export integration fixtures.
 - Expand README and usage examples, including agent transfer, saved surveys, service probing and `bash install.sh --pipx --full`.
 - Clarify that the agent's TLS dependency is installed with the core package and that existing editable installs must rerun the installer when dependencies change.
+- Document source archives, offline Git bundles, private backups and updates on Kali/WSL. Explain editable source paths, current-user pipx commands and dependency downloads; use `bash install.sh` so installation also works when the script has no executable bit.
 
 ## v1.10 — close the DB loop: dump the credential catalog on a confirmed login
 

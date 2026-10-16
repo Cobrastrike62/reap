@@ -17,40 +17,47 @@ You get the foothold. reap attaches to it and does the tedious part: it enumerat
 
 ## Install
 
-reap installs from source. On Kali:
+Reap requires Python 3.9 or newer and installs from source. On Kali, install Git and Python's venv support first:
+
+```bash
+sudo apt install -y git python3-venv
+```
+
+Then:
 
 ```bash
 git clone https://github.com/Cobrastrike62/reap.git ~/reap
 cd ~/reap
-./install.sh --full          # local .venv + all optional backends
+bash install.sh --full       # local .venv + all optional backends
 source .venv/bin/activate
 reap
 ```
 
-**Prefer a global command** with no venv to activate? Install via pipx — it puts an editable `reap` on your `PATH`:
+**Prefer a command available from any directory** with no venv to activate? Install via pipx. It puts an editable `reap` on your current user's `PATH`:
 
 ```bash
 sudo apt install -y pipx && pipx ensurepath   # once; then open a new shell
 ```
 
 ```bash
-cd ~/reap && bash install.sh --pipx --full    # global editable reap + all backends
+cd ~/reap
+bash install.sh --pipx --full    # current-user command + all backends
 ```
 
-(`--pipx` and `--full` are independent — `--pipx` makes it global, `--full` chooses the backends. Add `--trusted-host` behind a TLS-intercepting proxy.)
+`--pipx` and `--full` are independent: `--pipx` exposes the command for your current user; `--full` chooses the backends. This does not install Reap for every Linux account. Add `--trusted-host` behind a TLS-intercepting proxy.
 
-`install.sh` flags (combine freely):
+`install.sh` options can be combined with one backend selection: `--db`, `--win` or `--full`. Use `--full` for both backend sets. If you supply multiple backend flags, the last one wins.
 
 | flag | effect |
 |---|---|
 | `--full` | all optional backends (DB logins + SMB/pass-the-hash + GPP decrypt) |
 | `--db` | database login backends only (mysql / postgres / mongo / mssql) |
 | `--win` | Windows/AD backends only (impacket + cryptography) |
-| `--pipx` | install as a global, editable command via pipx (no venv to activate) |
+| `--pipx` | install an editable command on your current user's PATH via pipx (no venv to activate) |
 | `--with-pwncat` | also set up pwncat-vl in its own venv |
 | `--trusted-host` | pass pip `--trusted-host`, for TLS-intercepting proxies |
 
-The optional backends are only used for credential *testing* against those services; reap collects loot without them. Run `./install.sh --help` for the full list.
+The optional backends are only used for credential *testing* against those services; reap collects loot without them. Run `bash install.sh --help` for the full list.
 
 To update an existing Kali WSL checkout while retaining its loot databases:
 
@@ -61,9 +68,32 @@ bash install.sh --pipx --full
 reap
 ```
 
-For a local venv, use `bash install.sh --full` and activate `.venv` instead. `--full` chooses extras; `--pipx` supplies the global command.
+For a local venv, use `bash install.sh --full` and activate `.venv` instead. Keep the source directory at its installed path in both modes: the editable installation imports code from that directory. Moving or deleting it can break the command. If you move the source, rerun the pipx installer from the new location. For a local venv, move the old `.venv` out of the way first and let the installer create a fresh one; venv launchers contain absolute paths.
 
 The portable agent is included in the core package. Its operator-side certificate dependency, `cryptography`, is installed automatically from `pyproject.toml`; the target agent needs only Python 3.9+ and its standard library. After bringing an older checkout up to this version, rerun the installer so newly declared dependencies are installed. Editable source changes take effect immediately, but dependency changes still need installation. Existing loot databases gain the new socket fields and snapshot table automatically when Reap opens them.
+
+### Package Reap for another Kali machine
+
+For installation, transfer a source archive. The destination does not need `.git`. From the source repository, in PowerShell or a Linux shell:
+
+```bash
+git archive --format=tar.gz --prefix=reap/ --output=../reap-1.11.0.tar.gz HEAD
+```
+
+The archive contains the committed files at `HEAD`, including the installer and portable agent. It excludes Git history, uncommitted edits and untracked files. Ignored virtual environments and engagement artifacts are excluded unless they were committed. Commit the intended source changes before building a release archive, and check what is tracked with `git ls-files`.
+
+Copy the archive to a fresh Kali instance, install pipx using the prerequisite above, then run:
+
+```bash
+tar -xzf /path/to/reap-1.11.0.tar.gz -C "$HOME"
+cd ~/reap
+bash install.sh --pipx --full
+reap --help
+```
+
+Use a fresh destination directory. For an existing installation, back up the checkout and engagement files before updating its source; do not extract over local edits without reviewing them. Keep `~/reap` after installation. Recreate Python environments on each machine instead of copying `.venv` or pipx environments. The archive contains source, so the installer still downloads dependencies from PyPI; a fully offline installation needs a separate dependency wheelhouse compatible with the destination's Python version and architecture.
+
+If you also want to develop Reap or preserve commits that are not on GitHub, transfer a Git bundle instead. Copying a standalone checkout with `.git` also works, but includes local Git configuration and hooks. A source archive is smaller and sufficient to run Reap. See the [transfer and Git bundle walkthrough](USAGE.md#transfer-reap-to-another-kali-instance) for backup, clone and update instructions. These packages install Reap on your operator machine; a target using the [portable agent](#attaching-a-shell-reap-cannot-directly-handle) needs only its agent kit and Python.
 
 ## Quickstart
 
