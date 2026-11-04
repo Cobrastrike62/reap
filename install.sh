@@ -9,7 +9,8 @@ usage() {
   cat <<'EOF'
 reap installer
 
-Core installation includes the portable agent and its TLS certificate dependency.
+Prepared Reap releases include ready-to-use agents. You do not need Go.
+After installation, run reap, then type agent for guided setup.
 
   bash install.sh [flags]
 

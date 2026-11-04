@@ -26,3 +26,66 @@ jobs:
           docker run --rm -v "$PWD:/work" -w /work python:3.12-alpine
           sh -c 'apk add --no-cache build-base libffi-dev openssl-dev &&
           python -m pip install -e . pytest && python -m pytest -q'
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: reap-agent-linux-amd64
+          - os: ubuntu-24.04-arm
+            binary: reap-agent-linux-arm64
+          - os: windows-latest
+            binary: reap-agent-windows-amd64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.9'
+          cache: false
+      - run: python -m pip install -e . pytest
+      - run: go test ./...
+        working-directory: native-agent
+      - run: python native-agent/build.py --package
+      - run: python -m pytest -q
+        env:
+          REAP_NATIVE_BINARY: native-agent/dist/${{ matrix.binary }}
+      - name: Verify prepared wheel without a compiler or source checkout
+        run: |
+          python -m pip wheel --no-deps . --wheel-dir dist
+          python tests/verify_prepared_release.py dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.os }}
+          path: |
+            native-agent/dist/reap-agent-*
+            native-agent/dist/manifest.json
+  python-free-target:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.9'
+          cache: false
+      - run: python -m pip install -e . pytest
+      - run: python native-agent/build.py --package
+      - name: Prepare Alpine target and compiled HTTP fixture
+        run: |
+          mkdir -p /tmp/reap-alpine
+          curl -fsSL https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-minirootfs-3.23.6-x86_64.tar.gz -o /tmp/reap-alpine.tar.gz
+          echo '6fc0e3639a1c01f156970d7626aab90bc90697117069dbc39ad880b84efa319a  /tmp/reap-alpine.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/reap-alpine.tar.gz -C /tmp/reap-alpine
+          CGO_ENABLED=0 go build -trimpath -o native-agent/dist/http-fixture ./tests/fixtures/native_http.go
+      - name: Run operator outside Python-free target namespaces
+        run: >-
+          sudo env PYTHONPATH="$PWD" "$(command -v python)" tests/native_python_free.py
+          --rootfs /tmp/reap-alpine --binary native-agent/dist/reap-agent-linux-amd64
+          --http-fixture native-agent/dist/http-fixture

@@ -4,6 +4,9 @@
 build/
 dist/
 *.egg-info/
+reap/data/native/
+/reap-agent
+/reap-agent.exe
 __pycache__/
 *.py[cod]
 

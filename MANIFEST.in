@@ -1,0 +1,5 @@
+recursive-include native-agent *.go go.mod *.py *.md
+recursive-include reap/data/native manifest.json reap-agent-*
+recursive-include tests *.py *.go
+include HANDOFF_NATIVE_AGENT.md
+include CHANGELOG.md USAGE.md AGENT_QUICKSTART.md install.sh LICENSE

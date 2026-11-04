@@ -2,7 +2,7 @@
 
 Add a compiled Go agent alongside the existing Python agent so Reap can attach to a lab foothold when the target has no usable Python interpreter. Deliver prebuilt executables for Linux amd64, Linux arm64 and Windows amd64. The target must not need Python, Go, a compiler, OpenSSL CLI or an installed Reap package.
 
-This is an implementation handoff. The native agent and the proposed commands below are not implemented yet. Reap remains a Python application on the operator machine. Target support depends on the executable's OS, architecture and tested OS requirements; a compiled executable does not make every lab compatible.
+The transport was implemented locally in Reap 1.12.0; Reap 1.13.0 replaces the operator workflow below with guided one-file setup. Start with the [agent quickstart](AGENT_QUICKSTART.md). Users no longer build agents or transfer separate credentials. The remaining text records the original transport requirements and advanced manual workflow. See [developer notes](native-agent/README.md) for maintenance details. No public release has been published.
 
 ## Starting point
 

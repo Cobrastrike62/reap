@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.13.0 - one-file agent setup
+
+- Replace the normal agent setup with a guided `agent` command. `agent create YOUR-IP` provides a shortcut; target selection uses Linux, Linux ARM or Windows labels.
+- Generate one executable with its connection settings included. Copy that file and run it without flags. Keep private listener settings on the operator and reuse them with `agent listen`, `agent list` and `agent show`.
+- Include prebuilt target files in prepared installations. Agent creation needs no Go installation, compilation, binary selection or separate target credential files.
+- Add a short walkthrough that labels which machine runs each command, copyable instructions and plain-language errors. Keep older Python/manual workflows available.
+- Verify one-file Linux/Windows execution, an isolated Python-free target and installed packages outside the source checkout. Keep protocol authentication and command cleanup behavior.
+
+## v1.12.0 - native foreground agent
+
+- Add a separate Go 1.26.9 agent for Linux amd64/arm64 and Windows amd64. Builds disable cgo, use baseline amd64 instructions and inspect Linux binaries for dynamic-loader dependencies.
+- Preserve version-1 framed TLS/token interoperability in bind and connect-back modes. Enforce certificate pins before token transmission, bounded authentication attempts and an absolute listener deadline.
+- Execute shell commands with separate bounded streams, real exit codes, Unicode replacement and explicit timeout/cap diagnostics. Clean up Linux process groups and Windows Job Objects; assign Windows commands while suspended.
+- Add explicit native kit selection with executable-format/architecture validation, private permissions and secret-free checksum manifests. Keep Python kit creation and ordinary installation as defaults, without implicit builds or downloads.
+- Negotiate Linux `probe_tcp_v1` and delegate it through survey sessions. Native service probing needs no target Python. Preserve Python fallback for older peers and close malformed native exchanges without retrying through Python.
+- Add native runtime/protocol/cleanup tests, an isolated Python-free Alpine target with a compiled loopback HTTP fixture, installed-package checks and native CI jobs. See [native verification notes](native-agent/README.md) for environments actually executed; Windows probing remains unsupported.
+
 ## v1.11 — evidence, coverage, saved surveys and a portable agent
 
 - Preserve distinct socket binds, families, TCP/UDP, processes and PIDs. Decode IPv6 procfs addresses in the target's byte order and expose source status. Exclude UDP from TCP correlation and forwarding.

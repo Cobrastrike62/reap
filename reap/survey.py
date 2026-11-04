@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict
 
 from .modules._probe import sections
-from .transport.base import Result, Session
+from .transport.base import NotSupported, Result, Session
 
 _ERROR = re.compile(
     r'^(?:\S*/)?(?:sh|bash|dash|ash|zsh|find|ls|cat|stat|id|grep|ps|ss|netstat|'
@@ -31,6 +31,12 @@ class SurveySession(Session):
 
     def upload(self, local_path, remote_path):
         return self.session.upload(local_path, remote_path)
+
+    def probe_tcp(self, endpoints):
+        probe = getattr(self.session, 'probe_tcp', None)
+        if probe is None:
+            raise NotSupported('wrapped session has no native TCP probe operation')
+        return probe(endpoints)
 
     def open_forward(self, remote_host, remote_port, local_port=0):
         return self.session.open_forward(remote_host, remote_port, local_port)

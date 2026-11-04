@@ -6,6 +6,8 @@ import json
 import shlex
 
 from .models import EnumFlag, EnumSection
+from .probe import probe_endpoints, probe_rows
+from .transport.base import NotSupported
 
 # Runs on the target so loopback and private interface binds are reachable without
 # scanning a different network or following redirects to another host.
@@ -96,20 +98,41 @@ def identify_services(session, listeners, limit=12):
     checks = []
     if not selected:
         return EnumSection('Service identification', ['No discovered TCP listeners to probe.'])
-    code = base64.b64encode(_REMOTE.encode()).decode()
-    command = ('reap_python="$(command -v python3 || command -v python)"; '
-               '[ -n "$reap_python" ] || { echo "Python unavailable for service identification" >&2; exit 127; }; '
-               '"$reap_python" -c ' + shlex.quote('import base64; exec(base64.b64decode(%r))' % code)
-               + ' ' + shlex.quote(json.dumps(selected)))
-    result = session.exec(command, timeout=65)
+    rows = None
     try:
-        rows = json.loads(result.stdout)
-        if not isinstance(rows, list):
-            raise ValueError('invalid response')
-    except (ValueError, TypeError):
+        endpoints = probe_endpoints(selected)
+        native_probe = getattr(session, 'probe_tcp', None)
+        if native_probe is None:
+            raise NotSupported('session has no native probe operation')
+        rows = probe_rows(native_probe(endpoints), endpoints)
+    except NotSupported:
+        pass
+    except Exception as exc:
+        # A malformed/failed native exchange is coverage, never a hidden retry
+        # through target Python on a channel whose framing may now be uncertain.
         rows = []
-        checks.append({'name': 'service identification', 'status': 'tool unavailable' if result.exit_code == 127 else 'partial',
-                       'detail': result.stderr or 'response incomplete'})
+        close = getattr(session, 'close', None)
+        if close:
+            try:
+                close()
+            except Exception:
+                pass
+        checks.append({'name': 'service identification',
+                       'status': 'timed out' if isinstance(exc, TimeoutError) else 'partial',
+                       'detail': 'native probe failed: ' + str(exc)})
+    if rows is None:
+        code = base64.b64encode(_REMOTE.encode()).decode()
+        command = ('reap_python="$(command -v python3 || command -v python)"; '
+                   '[ -n "$reap_python" ] || { echo "Python unavailable for service identification" >&2; exit 127; }; '
+                   '"$reap_python" -c ' + shlex.quote('import base64; exec(base64.b64decode(%r))' % code)
+                   + ' ' + shlex.quote(json.dumps(selected)))
+        result = session.exec(command, timeout=65)
+        try:
+            rows = probe_rows(json.loads(result.stdout), selected)
+        except (ValueError, TypeError):
+            rows = []
+            checks.append({'name': 'service identification', 'status': 'tool unavailable' if result.exit_code == 127 else 'partial',
+                           'detail': result.stderr or 'response incomplete'})
     lines, flags = [], []
     for row in rows:
         checks.append({'name': row['addr'], 'status': row['status'],
@@ -128,5 +151,5 @@ def identify_services(session, listeners, limit=12):
         checks.append({'name': 'service identification limit', 'status': 'partial',
                        'detail': '%s of %s TCP endpoints selected' % (len(selected), len(candidates))})
     return EnumSection('Service identification', lines,
-                       'Opt-in TCP requests; at most 12 endpoints, 64 KiB each, 55 seconds total. Redirects are recorded, not followed.',
+                       'Opt-in TCP requests; 12 endpoints by default (24 maximum), 64 KiB each, 55 seconds total. Redirects are recorded, not followed.',
                        flags, checks)

@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import threading
 import uuid
+import math
 from pathlib import Path
 
-from ..data.reap_agent import (accept_authenticated, authenticate_client, pinned_client,
+from ..data.reap_agent import (OUTPUT_LIMIT, accept_authenticated, authenticate_client, pinned_client,
                                receive, send, server_context, token_from)
-from .base import Result, Session
+from ..probe import PROBE_CAPABILITY, finite_number, probe_endpoints, probe_rows, valid_text
+from .base import NotSupported, Result, Session
 
 
 class AgentSession(Session):
@@ -29,6 +31,15 @@ class AgentSession(Session):
         else:
             raise ValueError('agent mode must be connect or listen')
         self.channel = channel
+        try:
+            capabilities = hello.get('capabilities', [])
+            if (not isinstance(capabilities, list) or len(capabilities) > 32
+                    or any(not isinstance(item, str) or len(item) > 128 for item in capabilities)):
+                raise ConnectionError('invalid agent capabilities')
+            self.capabilities = frozenset(capabilities)
+        except BaseException:
+            channel.close()
+            raise
         self.local_addr = channel.getsockname()[0]
         self.shell = 'cmd' if hello.get('platform') == 'Windows' else 'sh'
         self.session_id = 'agent-' + uuid.uuid4().hex[:8]
@@ -45,9 +56,20 @@ class AgentSession(Session):
             try:
                 send(self.channel, dict(fields, id=self._sequence, op=op))
                 reply = receive(self.channel)
-                expected = 'result' if op == 'exec' else 'pong'
-                if reply.get('id') != self._sequence or reply.get('op') != expected:
+                expected = {'exec': 'result', 'ping': 'pong', 'probe_tcp': 'probe_result'}.get(op)
+                if (type(reply.get('id')) is not int or reply['id'] != self._sequence
+                        or expected is None or reply.get('op') != expected):
                     raise ConnectionError('invalid agent response')
+                if op == 'exec':
+                    if (not valid_text(reply.get('stdout'), OUTPUT_LIMIT)
+                            or not valid_text(reply.get('stderr'), OUTPUT_LIMIT + 512)
+                            or type(reply.get('exit_code')) is not int
+                            or not finite_number(reply.get('duration'))):
+                        raise ConnectionError('invalid agent execution result')
+                elif op == 'probe_tcp':
+                    if not finite_number(reply.get('duration')):
+                        raise ConnectionError('invalid agent probe duration')
+                    probe_rows(reply.get('rows'), fields['endpoints'])
                 return reply
             except BaseException:
                 # A timed-out exchange cannot safely be reused for another command.
@@ -56,9 +78,20 @@ class AgentSession(Session):
                 raise
 
     def exec(self, cmd, timeout=30):
-        timeout = max(0.1, min(float(timeout), 300))
+        if not isinstance(cmd, str) or len(cmd) > 256 * 1024:
+            raise ValueError('invalid command')
+        timeout = float(timeout)
+        if not math.isfinite(timeout):
+            raise ValueError('command timeout must be finite')
+        timeout = max(0.1, min(timeout, 300))
         reply = self._request('exec', timeout, command=cmd, timeout=timeout)
         return Result(reply['stdout'], reply['stderr'], int(reply['exit_code']), float(reply['duration']))
+
+    def probe_tcp(self, endpoints):
+        if PROBE_CAPABILITY not in self.capabilities or self.shell == 'cmd':
+            raise NotSupported('peer does not support Linux native TCP probing')
+        endpoints = probe_endpoints(endpoints)
+        return self._request('probe_tcp', 55, endpoints=endpoints)['rows']
 
     def is_alive(self):
         try:

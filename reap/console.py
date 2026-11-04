@@ -450,7 +450,7 @@ class ReapConsole(cmd.Cmd):
         """enum [filter] [--save] [--diff] [--probe] [--brief]
         Survey the active session, show evidence and coverage. --save persists a
         snapshot; --diff compares with the last saved snapshot of the same scope.
-        --probe identifies discovered TCP services (Linux, target Python required).
+        --probe identifies discovered TCP services (Linux native agent or target Python).
         --brief hides raw listings. show E1 expands a lead from the latest enum."""
         from .models import EnumSection
         try:
@@ -500,7 +500,7 @@ class ReapConsole(cmd.Cmd):
             else:
                 collected.append(EnumSection("Service identification", checks=[
                     {"name": "service identification", "status": "tool unavailable",
-                     "detail": "Target service identification currently requires Linux and Python."}]))
+                     "detail": "Target service identification currently requires Linux (native agent or target Python)."}]))
         all_flags = []
         self._enum_items = {}
         for section in collected:
@@ -626,7 +626,7 @@ class ReapConsole(cmd.Cmd):
                 self.console.print("Reach %s using: forward %s %s" % (row["addr"], row["ip"], row["port"]), markup=False, style="dim")
         if "--probe" in args:
             if self._is_windows(sid):
-                self.console.print("Target service identification currently requires Linux and Python.", markup=False)
+                self.console.print("Target service identification currently requires Linux (native agent or target Python).", markup=False)
                 return
             try:
                 section = identify_services(self.sessions[sid], listeners)
@@ -654,21 +654,156 @@ class ReapConsole(cmd.Cmd):
             self.console.print(self.do_show.__doc__, markup=False)
 
     def do_agent(self, line):
-        """agent prepare <new-directory> — create a portable agent and unique TLS/token bundle.
-        Connect back: register agent-listen <port> --bundle <directory> [--bind 0.0.0.0]
-        Bind agent: register agent <host> <port> --bundle <directory>"""
-        from .agent import prepare_bundle
+        """Connect another machine to Reap using one file.
+
+        agent                     guided setup: make a ready-to-run file
+        agent create YOUR-IP      make a Linux agent that connects to your IP
+        agent listen [NAME]       wait for the latest agent (or a saved NAME)
+        agent list                show saved agents
+        agent show [NAME]         show the copy-and-run instructions again
+
+        Optional create settings:
+          --target windows        make a Windows .exe
+          --target linux-arm64    make an agent for an ARM Linux machine
+          --output PATH           choose where to save the file
+          --port NUMBER           use a different connection port (default 7443)
+
+        Example: agent create 10.10.14.2
+        YOUR-IP is this machine's address that the target can reach, such as your VPN IP.
+        Copy the generated file to the target, run 'agent listen' here, then run the file there.
+        Older 'agent prepare' and 'register agent' commands remain available."""
+        import argparse
+        from .agent import create_agent, list_agent_profiles, load_agent_profile
         try:
             args = shlex.split(line)
-            if len(args) != 2 or args[0] != "prepare":
+            if not args:
+                self.console.print("Make an agent file", style="bold", markup=False)
+                self.console.print("Use your VPN IP or another address the target can reach.", markup=False)
+                callback = input("Your IP address: ").strip()
+                if not callback:
+                    self.console.print("No IP entered. Nothing was created.", markup=False)
+                    return
+                self.console.print("What kind of machine will run the file?\n"
+                                   "  1  Linux PC / server (most lab targets)\n"
+                                   "  2  Windows PC / server\n"
+                                   "  3  Linux ARM (for example, a Raspberry Pi)", markup=False)
+                choice = input("Choose 1, 2 or 3 [1]: ").strip() or "1"
+                target = {"1": "linux", "2": "windows", "3": "linux-arm64"}.get(choice)
+                if target is None:
+                    raise ValueError("Choose 1, 2 or 3. Run 'agent' to start again.")
+                profile = create_agent(callback, target=target)
+                self._show_agent_instructions(profile)
+                return
+            action = args[0]
+            if action in ("help", "--help", "-h"):
                 self.console.print(self.do_agent.__doc__, markup=False)
                 return
-            destination = prepare_bundle(args[1])
-            self.console.print("Created " + str(destination), markup=False)
-            self.console.print("Copy reap_agent.py, token.txt and fingerprint.txt to the lab target for connect-back mode. "
-                               "Keep key.pem on the operator machine. See README for bind mode.", markup=False)
+            if action == "prepare":
+                self._prepare_agent_kit(args[1:])
+                return
+            if action == "create":
+                parser = argparse.ArgumentParser(prog="agent create", exit_on_error=False,
+                    description="Make one ready-to-run file. YOUR-IP is your VPN IP or another address reachable from the target.")
+                parser.add_argument("callback", metavar="YOUR-IP")
+                parser.add_argument("--target", choices=("linux", "windows", "linux-arm64"), default="linux")
+                parser.add_argument("--output")
+                parser.add_argument("--port", type=int, default=7443)
+                options = parser.parse_args(args[1:])
+                profile = create_agent(options.callback, target=options.target,
+                                       output=options.output, port=options.port)
+                self._show_agent_instructions(profile)
+                return
+            if action == "list":
+                if len(args) != 1:
+                    raise ValueError("Use 'agent list' to see saved agents.")
+                profiles = list_agent_profiles()
+                if not profiles:
+                    self.console.print("No saved agents. Run 'agent' to create your first file.", markup=False)
+                    return
+                from rich.table import Table
+                table = Table(title="Saved agents")
+                for heading in ("Name", "Target", "Connects to", "File on this machine"):
+                    table.add_column(heading)
+                for profile in profiles:
+                    table.add_row(profile.name, self._agent_target_label(profile.target),
+                                  "%s:%s" % (profile.callback, profile.port), str(profile.executable))
+                self.console.print(table)
+                self.console.print("Use 'agent listen NAME' to wait for one, or 'agent show NAME' for its instructions.", markup=False)
+                return
+            if action in ("show", "listen"):
+                if len(args) > 2:
+                    raise ValueError("Use 'agent %s' or 'agent %s NAME'." % (action, action))
+                profile = load_agent_profile(args[1] if len(args) == 2 else None)
+                if action == "show":
+                    self._show_agent_instructions(profile)
+                else:
+                    self.console.print("Waiting for %s on port %s. Run the file on the target now.\n"
+                                       "You have 60 seconds; Ctrl-C cancels this wait." % (profile.name, profile.port), markup=False)
+                    bind = "::" if ":" in profile.callback else "0.0.0.0"
+                    try:
+                        session = AgentSession(bind, profile.port, profile.authkit, mode="listen", timeout=60)
+                    except (TimeoutError, OSError) as exc:
+                        self.console.print("No connection: %s\nCheck the IP and port, then run 'agent listen %s' to try again."
+                                           % (exc, profile.name), markup=False, style="yellow")
+                        return
+                    self._attach_agent_session(session)
+                    self.console.print("Connected. Try 'enum', 'ports --probe' or '!id' ('!whoami' on Windows).", markup=False)
+                return
+            self.console.print("Unknown agent command. Run 'agent help' to see the choices.", markup=False)
+        except (KeyboardInterrupt, EOFError):
+            self.console.print("\nAgent setup stopped. Run 'agent' to start again.", markup=False)
+        except SystemExit:
+            pass
         except Exception as exc:
-            self.console.print("Agent preparation failed: " + str(exc), markup=False, style="red")
+            self.console.print("Could not set up the agent: " + str(exc), markup=False, style="red")
+
+    @staticmethod
+    def _agent_target_label(target):
+        return {"linux": "Linux PC / server", "windows": "Windows PC / server",
+                "linux-arm64": "Linux ARM"}.get(target, target)
+
+    def _show_agent_instructions(self, profile):
+        self.console.print("\nYour agent file is ready:", style="bold", markup=False)
+        self.console.print(str(profile.executable), markup=False)
+        self.console.print("For: " + self._agent_target_label(profile.target), markup=False)
+        self.console.print("\n1. Copy this ONE file to the target using the access you already have.", markup=False)
+        self.console.print("2. On THIS machine, at the reap> prompt, run:", markup=False)
+        self.console.print("   agent listen " + profile.name, markup=False)
+        self.console.print("3. On the TARGET, in the folder where you copied the file, run:", markup=False)
+        if profile.target == "windows":
+            command = ".\\" + profile.executable.name
+            if any(char.isspace() or char in "'`;$&(){}[]" for char in command):
+                command = "& '" + command.replace("'", "''") + "'"
+            self.console.print("   " + command, markup=False)
+        else:
+            filename = shlex.quote("./" + profile.executable.name)
+            self.console.print("   chmod +x " + filename, markup=False)
+            self.console.print("   " + filename, markup=False)
+        self.console.print("\nKeep the target window open. Its file contains the connection details; keep it private and remove it when finished.\n"
+                           "Use 'agent show' to see these instructions again, or 'agent list' to see saved agents.", markup=False)
+
+    def _prepare_agent_kit(self, args):
+        """Retain the earlier multi-file kit interface for existing scripts."""
+        import argparse
+        from .agent import prepare_bundle
+        parser = argparse.ArgumentParser(prog="agent prepare", exit_on_error=False)
+        parser.add_argument("directory")
+        parser.add_argument("--type", dest="implementation", choices=("python", "native"), default="python")
+        parser.add_argument("--platform", choices=("linux", "windows"))
+        parser.add_argument("--arch", choices=("amd64", "arm64"))
+        parser.add_argument("--binary")
+        options = parser.parse_args(args)
+        destination = prepare_bundle(options.directory, implementation=options.implementation,
+                                     platform=options.platform, arch=options.arch, binary=options.binary)
+        self.console.print("Created kit: " + str(destination), markup=False)
+        self.console.print("For the simpler one-file setup, run 'agent'.", markup=False)
+
+    def _attach_agent_session(self, session):
+        self.sessions[session.session_id] = session
+        self.active = session.session_id
+        self.store.get_or_create_host(session.host)
+        self.console.print("Registered " + session.session_id, markup=False, style="green")
+        self._fingerprint(session.session_id)
 
     def _register_agent(self, adapter, args):
         import argparse
@@ -687,11 +822,7 @@ class ReapConsole(cmd.Cmd):
                 if options.port is None:
                     raise ValueError("register agent requires host and port")
                 session = AgentSession(options.endpoint, options.port, options.bundle)
-            self.sessions[session.session_id] = session
-            self.active = session.session_id
-            self.store.get_or_create_host(session.host)
-            self.console.print("Registered " + session.session_id, markup=False, style="green")
-            self._fingerprint(session.session_id)
+            self._attach_agent_session(session)
         except (Exception, KeyboardInterrupt, SystemExit) as exc:
             self.console.print("Agent registration failed: " + str(exc), markup=False, style="red")
 

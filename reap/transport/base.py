@@ -52,6 +52,10 @@ class Session:
         """Optional per adapter; raise :class:`NotSupported` if the channel can't."""
         raise NotSupported(f"{type(self).__name__} does not support upload")
 
+    def probe_tcp(self, endpoints):
+        """Optionally identify explicitly supplied, discovered TCP endpoints."""
+        raise NotSupported(f"{type(self).__name__} does not support native TCP probing")
+
     def open_forward(self, remote_host: str, remote_port: int, local_port: int = 0):
         """Open a local port-forward through this session's channel (like ``ssh -L``),
         returning a started ``LocalForward``. Only SSH-backed sessions can; others raise
