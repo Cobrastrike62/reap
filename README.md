@@ -9,6 +9,17 @@
 ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝
 ```
 
+<div align="center">
+
+<img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.9+" />
+<img src="https://img.shields.io/badge/Agent-Go-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go agent" />
+<img src="https://img.shields.io/badge/Side-Offense-E5534B?style=for-the-badge" alt="Offense" />
+<img src="https://img.shields.io/badge/Status-Active-555?style=for-the-badge" alt="Status: active" />
+<img src="https://img.shields.io/github/last-commit/Cobrastrike62/reap?style=for-the-badge&color=00FF41" alt="Last commit" />
+<img src="https://img.shields.io/github/license/Cobrastrike62/reap?style=for-the-badge&color=555" alt="License" />
+
+</div>
+
 Post-exploitation loot collection and credential-reuse testing for authorized engagements (penetration tests, HTB/CTF labs).
 
 You get the foothold. reap attaches to it and does the tedious part: it enumerates the host for secrets, configs, keys, and privilege-escalation signals, tests every credential it finds against every service it finds, and gives you a ranked findings list plus a report. It does not exploit anything and it does not decide your pivots — those stay with you.

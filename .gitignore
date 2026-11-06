@@ -23,6 +23,14 @@ reap-userpass.txt
 reap-hashes-m*.txt
 reap-hashes-manifest.json
 requirements-pwncat.lock
+output/
+*.log
+
+# secrets and VPN configs
+.env
+*.ovpn
+*.key
+*.pem
 
 # kept locally, not published
 loot-framework-spec.md
